@@ -33,6 +33,10 @@ cfg_select! {
         mod windows;
         pub use self::windows::*;
     }
+    target_os = "scarlet" => {
+        mod scarlet;
+        pub use self::scarlet::*;
+    }
     target_os = "solid_asp3" => {
         mod solid;
         pub use self::solid::*;

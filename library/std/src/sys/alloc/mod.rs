@@ -92,6 +92,9 @@ cfg_select! {
     target_os = "solid_asp3" => {
         mod solid;
     }
+    target_os = "scarlet" => {
+        mod scarlet;
+    }
     target_os = "uefi" => {
         mod uefi;
     }

@@ -1689,6 +1689,7 @@ supported_targets! {
     ("riscv64im-unknown-none-elf", riscv64im_unknown_none_elf),
     ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
     ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
+    ("riscv64gc-unknown-scarlet", riscv64gc_unknown_scarlet),
     ("riscv64gc-unknown-linux-gnu", riscv64gc_unknown_linux_gnu),
     ("riscv64gc-unknown-linux-musl", riscv64gc_unknown_linux_musl),
     ("riscv64a23-unknown-linux-gnu", riscv64a23_unknown_linux_gnu),
@@ -1703,6 +1704,7 @@ supported_targets! {
     ("aarch64-unknown-none", aarch64_unknown_none),
     ("aarch64-unknown-none-softfloat", aarch64_unknown_none_softfloat),
     ("aarch64_be-unknown-none-softfloat", aarch64_be_unknown_none_softfloat),
+    ("aarch64-unknown-scarlet", aarch64_unknown_scarlet),
     ("aarch64-unknown-nuttx", aarch64_unknown_nuttx),
 
     ("x86_64-fortanix-unknown-sgx", x86_64_fortanix_unknown_sgx),
@@ -1982,6 +1984,7 @@ crate::target_spec_enum! {
         Redox = "redox",
         Rtems = "rtems",
         Solaris = "solaris",
+        Scarlet = "scarlet",
         SolidAsp3 = "solid_asp3",
         TeeOs = "teeos",
         Trusty = "trusty",
