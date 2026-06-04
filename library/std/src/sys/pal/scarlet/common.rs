@@ -48,11 +48,16 @@ pub extern "C" fn _start(argc: isize, argv: *const *const c_char) -> ! {
     // SAFETY: rustc emits `main` as the C ABI entry shim for normal Rust
     // executables. It calls `std::rt::lang_start`, which runs `sys::init`.
     let code = unsafe { main(argc as i32, argv) };
+    #[cfg(target_os = "scarlet")]
+    unsafe {
+        crate::sys::thread_local::key::run_dtors();
+    }
     #[cfg(all(
         target_thread_local,
         not(all(target_family = "wasm", not(target_feature = "atomics")))
     ))]
     crate::sys::thread_local::destructors::run();
+    #[cfg(not(target_os = "scarlet"))]
     crate::rt::thread_cleanup();
     crate::sys::pal::os::exit(code);
 }

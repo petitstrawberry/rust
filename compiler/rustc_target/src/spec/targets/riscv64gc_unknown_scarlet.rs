@@ -26,6 +26,9 @@ pub(crate) fn target() -> Target {
             features: "+m,+a,+f,+d,+c,+zicsr,+zifencei".into(),
             panic_strategy: PanicStrategy::Abort,
             main_needs_argc_argv: true,
+            // Scarlet does not currently populate ELF native TLS blocks for
+            // each thread. std uses its OS-level TLS backend instead.
+            has_thread_local: false,
             relocation_model: RelocModel::Static,
             code_model: Some(CodeModel::Medium),
             emit_debug_gdb_scripts: false,

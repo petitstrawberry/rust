@@ -30,7 +30,6 @@ cfg_select! {
         target_os = "zkvm",
         target_os = "trusty",
         target_os = "vexos",
-        target_os = "scarlet",
     ) => {
         mod no_threads;
         pub use no_threads::{EagerStorage, LazyStorage, thread_local_inner};
@@ -101,7 +100,6 @@ pub(crate) mod guard {
             target_os = "zkvm",
             target_os = "trusty",
             target_os = "vexos",
-            target_os = "scarlet",
         ) => {
             pub(crate) fn enable() {
                 // FIXME: Right now there is no concept of "thread exit" on
@@ -196,6 +194,14 @@ pub(crate) mod key {
             pub(super) use racy::LazyKey;
             pub(super) use moto_rt::tls::{Key, get, set};
             use moto_rt::tls::{create, destroy};
+        }
+        target_os = "scarlet" => {
+            mod racy;
+            mod scarlet;
+            pub(super) use racy::LazyKey;
+            pub(crate) use scarlet::run_dtors;
+            pub(super) use scarlet::{Key, get, set};
+            use scarlet::{create, destroy};
         }
         _ => {}
     }

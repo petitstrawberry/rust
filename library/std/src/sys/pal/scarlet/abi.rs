@@ -29,11 +29,21 @@ pub struct Inet4SocketAddress {
 }
 
 pub mod mmap {
+    pub const PROT_NONE: usize = 0x0;
     pub const PROT_READ: usize = 0x1;
     pub const PROT_WRITE: usize = 0x2;
 
     pub const MAP_PRIVATE: usize = 0x02;
+    pub const MAP_FIXED: usize = 0x10;
     pub const MAP_ANONYMOUS: usize = 0x20;
+}
+
+pub mod clone_flags {
+    pub const VM: u64 = 0b00000001;
+    pub const FS: u64 = 0b00000010;
+    pub const FILES: u64 = 0b00000100;
+    pub const THREAD: u64 = 0b00001000;
+    pub const SET_TLS: u64 = 0b00010000;
 }
 
 #[inline]
@@ -82,6 +92,71 @@ pub fn thread_yield() -> Result<(), ()> {
 }
 
 #[inline]
+pub fn clone_thread(
+    flags: u64,
+    stack_top: usize,
+    entry: extern "C" fn(usize) -> !,
+    entry_arg: usize,
+    tls_ptr: usize,
+) -> Result<u32, ()> {
+    syscall_result(scarlet_sys::syscall5(
+        Syscall::Clone,
+        flags as usize,
+        stack_top,
+        entry as *const () as usize,
+        entry_arg,
+        tls_ptr,
+    ))
+    .map(|tid| tid as u32)
+}
+
+#[inline]
+pub fn waitpid(pid: i32, status: &mut i32, options: i32) -> Result<i32, ()> {
+    let ret = scarlet_sys::syscall3(
+        Syscall::Waitpid,
+        pid as usize,
+        (status as *mut i32) as usize,
+        options as usize,
+    );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(ret as i32) }
+}
+
+#[inline]
+pub fn thread_detach(tid: u32) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall1(Syscall::ThreadDetach, tid as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn thread_exit_cleanup(
+    code: i32,
+    stack_mapping_base: usize,
+    stack_mapping_len: usize,
+    tls_mapping_base: usize,
+    tls_mapping_len: usize,
+) -> ! {
+    scarlet_sys::syscall5(
+        Syscall::ThreadExitCleanup,
+        code as usize,
+        stack_mapping_base,
+        stack_mapping_len,
+        tls_mapping_base,
+        tls_mapping_len,
+    );
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[inline]
+pub fn exit_current_thread(code: i32) -> ! {
+    scarlet_sys::syscall1(Syscall::Exit, code as usize);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[inline]
 pub fn stream_read(handle: usize, data: &mut [u8]) -> Result<usize, ()> {
     let ret =
         scarlet_sys::syscall3(Syscall::StreamRead, handle, data.as_mut_ptr() as usize, data.len());
@@ -112,6 +187,11 @@ pub fn memory_map(
 pub fn memory_unmap(addr: usize, length: usize) -> Result<(), ()> {
     let ret = scarlet_sys::syscall2(Syscall::MemoryUnmap, addr, length);
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn sbrk(size: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall1(Syscall::Sbrk, size))
 }
 
 #[inline]

@@ -20,6 +20,9 @@ pub(crate) fn target() -> Target {
         stack_probes: StackProbeType::Inline,
         panic_strategy: PanicStrategy::Abort,
         main_needs_argc_argv: true,
+        // Scarlet does not currently populate ELF native TLS blocks for each
+        // thread. std uses its OS-level TLS backend instead.
+        has_thread_local: false,
         default_uwtable: true,
         ..Default::default()
     };
