@@ -111,6 +111,19 @@ pub fn clone_thread(
 }
 
 #[inline]
+pub fn clone_process(flags: u64) -> Result<u32, ()> {
+    syscall_result(scarlet_sys::syscall5(Syscall::Clone, flags as usize, 0, 0, 0, 0))
+        .map(|pid| pid as u32)
+}
+
+#[inline]
+pub fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> Result<(), ()> {
+    let ret =
+        scarlet_sys::syscall4(Syscall::Execve, path as usize, argv as usize, envp as usize, 0);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
 pub fn waitpid(pid: i32, status: &mut i32, options: i32) -> Result<i32, ()> {
     let ret = scarlet_sys::syscall3(
         Syscall::Waitpid,

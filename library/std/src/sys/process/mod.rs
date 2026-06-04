@@ -1,4 +1,8 @@
 cfg_select! {
+    target_os = "scarlet" => {
+        mod scarlet;
+        use scarlet as imp;
+    }
     target_family = "unix" => {
         mod unix;
         use unix as imp;
