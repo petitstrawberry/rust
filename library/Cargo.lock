@@ -314,6 +314,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "scarlet-abi"
+version = "0.16.0"
+dependencies = [
+ "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "scarlet-sys"
+version = "0.16.0"
+dependencies = [
+ "rustc-std-workspace-core",
+ "scarlet-abi",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -342,6 +357,7 @@ dependencies = [
  "rand",
  "rand_xorshift",
  "rustc-demangle",
+ "scarlet-sys",
  "std_detect",
  "unwind",
  "vex-sdk",

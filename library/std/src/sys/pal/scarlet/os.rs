@@ -2,6 +2,7 @@ use super::unsupported;
 use crate::ffi::{OsStr, OsString};
 use crate::marker::PhantomData;
 use crate::path::{self, PathBuf};
+use crate::sys::pal::abi;
 use crate::{fmt, io};
 
 pub fn errno() -> i32 {
@@ -65,7 +66,8 @@ pub fn home_dir() -> Option<PathBuf> {
     None
 }
 
-pub fn exit(_code: i32) -> ! {
+pub fn exit(code: i32) -> ! {
+    abi::exit_group(code);
     crate::intrinsics::abort()
 }
 

@@ -102,6 +102,9 @@ vex-sdk = { version = "0.27.0", features = [
     'rustc-dep-of-std',
 ], default-features = false }
 
+[target.'cfg(target_os = "scarlet")'.dependencies]
+scarlet-sys = { path = "../scarlet-sys", features = ['rustc-dep-of-std'] }
+
 [features]
 backtrace = [
     'addr2line/rustc-dep-of-std',

@@ -29,6 +29,10 @@ cfg_select! {
         mod trusty;
         pub use trusty::*;
     }
+    target_os = "scarlet" => {
+        mod scarlet;
+        pub use scarlet::*;
+    }
     target_os = "uefi" => {
         mod uefi;
         pub use uefi::*;

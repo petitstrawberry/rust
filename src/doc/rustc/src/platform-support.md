@@ -269,6 +269,7 @@ target | std | host | notes
 [`aarch64-unknown-nuttx`](platform-support/nuttx.md) | ✓ |  | ARM64 with NuttX
 [`aarch64-unknown-openbsd`](platform-support/openbsd.md) | ✓ | ✓ | ARM64 OpenBSD
 [`aarch64-unknown-redox`](platform-support/redox.md) | ✓ |  | ARM64 Redox OS
+[`aarch64-unknown-scarlet`](platform-support/scarlet.md) | ? |  | ARM64 Scarlet Native
 [`aarch64-unknown-teeos`](platform-support/aarch64-unknown-teeos.md) | ? |  | ARM64 TEEOS |
 [`aarch64-unknown-trusty`](platform-support/trusty.md) | ✓ |  |
 [`aarch64-uwp-windows-msvc`](platform-support/uwp-windows-msvc.md) | ✓ |  |
@@ -399,6 +400,7 @@ target | std | host | notes
 [`riscv64gc-unknown-nuttx-elf`](platform-support/nuttx.md) | ✓ |  | RISC-V 64bit with NuttX
 [`riscv64gc-unknown-openbsd`](platform-support/openbsd.md) | ✓ | ✓ | OpenBSD/riscv64
 [`riscv64gc-unknown-redox`](platform-support/redox.md) | ✓ |  | RISC-V 64bit Redox OS
+[`riscv64gc-unknown-scarlet`](platform-support/scarlet.md) | ? |  | RISC-V 64bit Scarlet Native
 [`riscv64imac-unknown-nuttx-elf`](platform-support/nuttx.md) | ✓ |  | RISC-V 64bit with NuttX
 [`riscv64a23-unknown-linux-gnu`](platform-support/riscv64a23-unknown-linux-gnu.md) | ✓ | ✓ | RISC-V Linux (kernel 6.8.0+, glibc 2.39)
 [`s390x-unknown-linux-musl`](platform-support/s390x-unknown-linux-musl.md) | ✓ |  | S390x Linux (kernel 3.2, musl 1.2.5)

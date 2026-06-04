@@ -1,0 +1,14 @@
+[package]
+name = "scarlet-abi"
+version = "0.16.0"
+edition = "2024"
+
+[lib]
+name = "scarlet_abi"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../rustc-std-workspace-core", package = "rustc-std-workspace-core" }
+
+[features]
+rustc-dep-of-std = []
