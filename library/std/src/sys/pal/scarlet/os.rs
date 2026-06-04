@@ -82,6 +82,8 @@ impl fmt::Display for JoinPathsError {
 impl crate::error::Error for JoinPathsError {}
 
 pub fn current_exe() -> io::Result<PathBuf> {
+    // TODO(scarlet): expose the executed image path through the Native task ABI.
+    // argv[0] is not reliable enough for std::env::current_exe.
     unsupported()
 }
 
@@ -99,7 +101,7 @@ pub fn exit(code: i32) -> ! {
 }
 
 pub fn getpid() -> u32 {
-    panic!("no pids on this platform")
+    abi::getpid().unwrap_or(0)
 }
 
 fn path_to_cstring(path: &path::Path) -> io::Result<CString> {

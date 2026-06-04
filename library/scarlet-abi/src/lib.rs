@@ -138,6 +138,7 @@ pub enum Syscall {
     VfsGetCwdPath = 408,
     VfsRename = 409,
     VfsMetadata = 410,
+    VfsCreateHardlink = 411,
 
     // Filesystem operations
     FsMount = 500,

@@ -13,6 +13,10 @@ cfg_select! {
         mod motor;
         pub use motor::{Pipe, pipe};
     }
+    target_os = "scarlet" => {
+        mod scarlet;
+        pub use scarlet::{Pipe, pipe};
+    }
     _ => {
         mod unsupported;
         pub use unsupported::{Pipe, pipe};

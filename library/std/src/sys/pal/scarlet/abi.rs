@@ -42,6 +42,18 @@ pub fn handle_duplicate(handle: usize) -> Result<usize, ()> {
 }
 
 #[inline]
+pub fn pipe() -> Result<(usize, usize), ()> {
+    let mut pipefd = [0u32; 2];
+    let ret = scarlet_sys::syscall2(Syscall::Pipe, pipefd.as_mut_ptr() as usize, 0);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok((pipefd[0] as usize, pipefd[1] as usize)) }
+}
+
+#[inline]
+pub fn getpid() -> Result<u32, ()> {
+    syscall_result(scarlet_sys::syscall0(Syscall::Getpid)).map(|pid| pid as u32)
+}
+
+#[inline]
 pub fn stream_read(handle: usize, data: &mut [u8]) -> Result<usize, ()> {
     let ret =
         scarlet_sys::syscall3(Syscall::StreamRead, handle, data.as_mut_ptr() as usize, data.len());
@@ -156,6 +168,16 @@ pub fn vfs_get_cwd_path(buffer: &mut [u8]) -> Result<usize, ()> {
 #[inline]
 pub fn vfs_rename(old_path: *const u8, new_path: *const u8) -> Result<(), ()> {
     let ret = scarlet_sys::syscall2(Syscall::VfsRename, old_path as usize, new_path as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_create_hardlink(source_path: *const u8, target_path: *const u8) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(
+        Syscall::VfsCreateHardlink,
+        source_path as usize,
+        target_path as usize,
+    );
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }
 

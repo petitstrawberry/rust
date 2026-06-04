@@ -242,10 +242,14 @@ impl File {
     }
 
     pub fn lock(&self) -> io::Result<()> {
+        // TODO(scarlet): add Native handle/file lock operations once the kernel
+        // exposes advisory locking for FileObject capabilities.
         unsupported()
     }
 
     pub fn lock_shared(&self) -> io::Result<()> {
+        // TODO(scarlet): add Native handle/file lock operations once the kernel
+        // exposes advisory locking for FileObject capabilities.
         unsupported()
     }
 
@@ -258,6 +262,8 @@ impl File {
     }
 
     pub fn unlock(&self) -> io::Result<()> {
+        // TODO(scarlet): add Native handle/file lock operations once the kernel
+        // exposes advisory locking for FileObject capabilities.
         unsupported()
     }
 
@@ -307,12 +313,7 @@ impl File {
     }
 
     pub fn size(&self) -> Option<io::Result<u64>> {
-        Some((|| {
-            let current = self.tell()?;
-            let end = self.seek(SeekFrom::End(0))?;
-            self.seek(SeekFrom::Start(current))?;
-            Ok(end)
-        })())
+        Some(self.file_attr().map(|attr| attr.size()))
     }
 
     pub fn tell(&self) -> io::Result<u64> {
@@ -326,10 +327,14 @@ impl File {
     }
 
     pub fn set_permissions(&self, _perm: FilePermissions) -> io::Result<()> {
+        // TODO(scarlet): add a Native FileObject permission mutation syscall
+        // once VFS nodes support chmod-style updates.
         unsupported()
     }
 
     pub fn set_times(&self, _times: FileTimes) -> io::Result<()> {
+        // TODO(scarlet): add Native FileObject timestamp mutation once VFS
+        // filesystems expose timestamp setters.
         unsupported()
     }
 }
@@ -371,14 +376,20 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
 }
 
 pub fn set_perm(_path: &Path, _perm: FilePermissions) -> io::Result<()> {
+    // TODO(scarlet): add a VFS permission mutation syscall once VFS nodes
+    // support chmod-style updates.
     unsupported()
 }
 
 pub fn set_times(_path: &Path, _times: FileTimes) -> io::Result<()> {
+    // TODO(scarlet): add a VFS timestamp mutation syscall once filesystems
+    // expose timestamp setters.
     unsupported()
 }
 
 pub fn set_times_nofollow(_path: &Path, _times: FileTimes) -> io::Result<()> {
+    // TODO(scarlet): add no-follow timestamp mutation once VFS has lstat-style
+    // path resolution and timestamp setters.
     unsupported()
 }
 
@@ -433,8 +444,11 @@ pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
         .map_err(|()| io::ErrorKind::Other.into())
 }
 
-pub fn link(_src: &Path, _dst: &Path) -> io::Result<()> {
-    unsupported()
+pub fn link(src: &Path, dst: &Path) -> io::Result<()> {
+    let src = path_to_cstring(src)?;
+    let dst = path_to_cstring(dst)?;
+    abi::vfs_create_hardlink(src.as_ptr().cast(), dst.as_ptr().cast())
+        .map_err(|()| io::ErrorKind::Other.into())
 }
 
 pub fn stat(path: &Path) -> io::Result<FileAttr> {

@@ -10,6 +10,9 @@ pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::from_secs(0));
 
 impl Instant {
     pub fn now() -> Instant {
+        // TODO(scarlet): expose a monotonic clock through the Native ABI.
+        // Kernel-internal boot time helpers need an ABI contract before std can
+        // rely on Instant semantics.
         panic!("time not implemented on this platform")
     }
 
@@ -32,6 +35,8 @@ impl SystemTime {
     pub const MIN: SystemTime = SystemTime(Duration::ZERO);
 
     pub fn now() -> SystemTime {
+        // TODO(scarlet): expose a realtime clock through the Native ABI.
+        // SystemTime must not be backed by boot-relative kernel time.
         panic!("time not implemented on this platform")
     }
 
