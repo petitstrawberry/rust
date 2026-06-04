@@ -12,6 +12,22 @@ pub const STDIN_HANDLE: usize = 0;
 pub const STDOUT_HANDLE: usize = 1;
 pub const STDERR_HANDLE: usize = 2;
 
+pub const SOCKET_DOMAIN_INET4: usize = 2;
+pub const SOCKET_TYPE_STREAM: usize = 1;
+pub const SOCKET_TYPE_DATAGRAM: usize = 2;
+pub const SOCKET_PROTOCOL_TCP: usize = 6;
+pub const SOCKET_PROTOCOL_UDP: usize = 17;
+pub const SOCKET_SHUTDOWN_READ: usize = 0;
+pub const SOCKET_SHUTDOWN_WRITE: usize = 1;
+pub const SOCKET_SHUTDOWN_BOTH: usize = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Inet4SocketAddress {
+    pub addr: [u8; 4],
+    pub port: u16,
+}
+
 pub mod mmap {
     pub const PROT_READ: usize = 0x1;
     pub const PROT_WRITE: usize = 0x2;
@@ -51,6 +67,18 @@ pub fn pipe() -> Result<(usize, usize), ()> {
 #[inline]
 pub fn getpid() -> Result<u32, ()> {
     syscall_result(scarlet_sys::syscall0(Syscall::Getpid)).map(|pid| pid as u32)
+}
+
+#[inline]
+pub fn sleep(nanoseconds: u64) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall1(Syscall::Sleep, nanoseconds as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn thread_yield() -> Result<(), ()> {
+    let ret = scarlet_sys::syscall0(Syscall::Yield);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }
 
 #[inline]
@@ -189,4 +217,72 @@ pub(crate) fn vfs_metadata(path: *const u8, metadata: &mut RawFileMetadata) -> R
         (metadata as *mut RawFileMetadata) as usize,
     );
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn socket_create(domain: usize, socket_type: usize, protocol: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall3(Syscall::SocketCreate, domain, socket_type, protocol))
+}
+
+#[inline]
+pub fn socket_bind_inet(handle: usize, address: &Inet4SocketAddress) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall3(
+        Syscall::SocketBind,
+        handle,
+        (address as *const Inet4SocketAddress) as usize,
+        size_of::<Inet4SocketAddress>(),
+    );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn socket_connect_inet(handle: usize, address: &Inet4SocketAddress) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall3(
+        Syscall::SocketConnect,
+        handle,
+        (address as *const Inet4SocketAddress) as usize,
+        size_of::<Inet4SocketAddress>(),
+    );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn socket_listen(handle: usize, backlog: usize) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(Syscall::SocketListen, handle, backlog);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn socket_accept(handle: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall1(Syscall::SocketAccept, handle))
+}
+
+#[inline]
+pub fn socket_shutdown(handle: usize, how: usize) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(Syscall::SocketShutdown, handle, how);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn socket_recvfrom(handle: usize, data: &mut [u8], address: &mut [u8; 8]) -> Result<usize, ()> {
+    let ret = scarlet_sys::syscall4(
+        Syscall::SocketRecvFrom,
+        handle,
+        data.as_mut_ptr() as usize,
+        data.len(),
+        address.as_mut_ptr() as usize,
+    );
+    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
+}
+
+#[inline]
+pub fn socket_sendto(handle: usize, data: &[u8], address: &[u8; 8]) -> Result<usize, ()> {
+    let ret = scarlet_sys::syscall4(
+        Syscall::SocketSendTo,
+        handle,
+        data.as_ptr() as usize,
+        data.len(),
+        address.as_ptr() as usize,
+    );
+    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
 }
