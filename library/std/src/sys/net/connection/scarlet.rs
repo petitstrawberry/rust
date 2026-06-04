@@ -1,6 +1,7 @@
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
 use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use crate::str::FromStr;
+use crate::sync::Mutex;
 use crate::sys::pal::abi;
 use crate::sys::unsupported;
 use crate::time::Duration;
@@ -253,6 +254,7 @@ impl fmt::Debug for TcpListener {
 pub struct UdpSocket {
     handle: usize,
     local: SocketAddr,
+    peer: Mutex<Option<SocketAddr>>,
 }
 
 impl UdpSocket {
@@ -266,7 +268,7 @@ impl UdpSocket {
             )
             .map_err(|()| io::ErrorKind::Other)?;
             match abi::socket_bind_inet(handle, &raw) {
-                Ok(()) => Ok(UdpSocket { handle, local: *addr }),
+                Ok(()) => Ok(UdpSocket { handle, local: *addr, peer: Mutex::new(None) }),
                 Err(()) => {
                     let _ = abi::handle_close(handle);
                     Err(io::ErrorKind::AddrInUse.into())
@@ -276,8 +278,7 @@ impl UdpSocket {
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        // TODO(scarlet): expose getpeername for connected UDP sockets.
-        unsupported()
+        self.peer.lock().unwrap().ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
@@ -302,8 +303,9 @@ impl UdpSocket {
     }
 
     pub fn duplicate(&self) -> io::Result<UdpSocket> {
+        let peer = *self.peer.lock().unwrap();
         abi::handle_duplicate(self.handle)
-            .map(|handle| UdpSocket { handle, local: self.local })
+            .map(|handle| UdpSocket { handle, local: self.local, peer: Mutex::new(peer) })
             .map_err(|()| io::ErrorKind::Other.into())
     }
 
@@ -424,7 +426,9 @@ impl UdpSocket {
         super::each_addr(addr, |addr| {
             let raw = socket_addr_to_raw_v4(addr)?;
             abi::socket_connect_inet(self.handle, &raw)
-                .map_err(|()| io::ErrorKind::ConnectionRefused.into())
+                .map_err(|()| io::Error::from(io::ErrorKind::ConnectionRefused))?;
+            *self.peer.lock().unwrap() = Some(*addr);
+            Ok(())
         })
     }
 }
