@@ -6,7 +6,6 @@ use crate::path::{Path, PathBuf};
 use crate::process::StdioPipes;
 use crate::sys::fs::File;
 use crate::sys::pal::abi;
-use crate::sys::unsupported;
 use crate::{fmt, fs, io, str};
 
 const WAIT_NOHANG: i32 = 0x1;
@@ -135,7 +134,27 @@ fn validate_stdio(
         // TODO(scarlet): support Null, MakePipe, InheritFile, and cross-stream
         // ParentStdout/ParentStderr once Native has handle remapping semantics
         // for child stdio setup.
-        _ => unsupported(),
+        _ => unsupported_process(match (role, stdio) {
+            (StdioRole::Stdin, Stdio::Null) => "stdin null stdio is not supported yet",
+            (StdioRole::Stdout, Stdio::Null) => "stdout null stdio is not supported yet",
+            (StdioRole::Stderr, Stdio::Null) => "stderr null stdio is not supported yet",
+            (StdioRole::Stdin, Stdio::MakePipe) => "stdin pipe stdio is not supported yet",
+            (StdioRole::Stdout, Stdio::MakePipe) => "stdout pipe stdio is not supported yet",
+            (StdioRole::Stderr, Stdio::MakePipe) => "stderr pipe stdio is not supported yet",
+            (StdioRole::Stdin, Stdio::InheritFile(_)) => "stdin file stdio is not supported yet",
+            (StdioRole::Stdout, Stdio::InheritFile(_)) => "stdout file stdio is not supported yet",
+            (StdioRole::Stderr, Stdio::InheritFile(_)) => "stderr file stdio is not supported yet",
+            (StdioRole::Stdin, Stdio::ParentStdout | Stdio::ParentStderr) => {
+                "stdin cross-stream stdio is not supported"
+            }
+            (StdioRole::Stdout, Stdio::ParentStderr) => {
+                "stdout cross-stream stdio is not supported"
+            }
+            (StdioRole::Stderr, Stdio::ParentStdout) => {
+                "stderr cross-stream stdio is not supported"
+            }
+            _ => "stdio configuration is not supported yet",
+        }),
     }
 }
 
@@ -249,7 +268,7 @@ fn bytes_to_cstring(value: Vec<u8>) -> io::Result<CString> {
 pub fn output(_cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
     // TODO(scarlet): implement this with Stdio::MakePipe once child stdio
     // handle remapping is available in the Native ABI.
-    unsupported()
+    unsupported_process("Command::output is not supported until child stdio pipes are available")
 }
 
 impl From<ChildPipe> for Stdio {
@@ -399,7 +418,7 @@ impl Process {
     pub fn kill(&mut self) -> io::Result<()> {
         // TODO(scarlet): wire this to Native Kill once syscall 6 has a kernel
         // implementation.
-        unsupported()
+        unsupported_process("Child::kill is not supported until Native Kill is implemented")
     }
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
@@ -460,5 +479,9 @@ pub fn read_output(
     _stderr: &mut Vec<u8>,
 ) -> io::Result<()> {
     // TODO(scarlet): implement concurrent pipe draining for Command::output().
-    unsupported()
+    unsupported_process("read_output is not supported until Command::output pipes are available")
+}
+
+fn unsupported_process<T>(message: &'static str) -> io::Result<T> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, message))
 }
