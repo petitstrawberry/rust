@@ -19,12 +19,13 @@ pub(crate) fn target() -> Target {
         max_atomic_width: Some(128),
         stack_probes: StackProbeType::Inline,
         panic_strategy: PanicStrategy::Abort,
+        main_needs_argc_argv: true,
         default_uwtable: true,
         ..Default::default()
     };
 
     Target {
-        llvm_target: "aarch64-unknown-none".into(),
+        llvm_target: "aarch64-unknown-scarlet".into(),
         metadata: TargetMetadata {
             description: Some("Scarlet Native AArch64 (ARMv8-A ISA)".into()),
             tier: Some(3),

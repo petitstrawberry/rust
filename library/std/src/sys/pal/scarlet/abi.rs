@@ -1,6 +1,10 @@
 //! Scarlet Native ABI syscall bindings used by the Scarlet `std` PAL.
 
 use scarlet_sys::Syscall;
+pub(crate) use scarlet_sys::{
+    FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR, FILE_TYPE_SYMLINK,
+    RawFileMetadata,
+};
 
 pub const SYSCALL_ERROR: usize = usize::MAX;
 
@@ -17,8 +21,24 @@ pub mod mmap {
 }
 
 #[inline]
+fn syscall_result(ret: usize) -> Result<usize, ()> {
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(ret) }
+}
+
+#[inline]
 pub fn exit_group(code: i32) -> usize {
     scarlet_sys::syscall1(Syscall::ExitGroup, code as usize)
+}
+
+#[inline]
+pub fn handle_close(handle: usize) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall1(Syscall::HandleClose, handle);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn handle_duplicate(handle: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall1(Syscall::HandleDuplicate, handle))
 }
 
 #[inline]
@@ -51,5 +71,100 @@ pub fn memory_map(
 #[inline]
 pub fn memory_unmap(addr: usize, length: usize) -> Result<(), ()> {
     let ret = scarlet_sys::syscall2(Syscall::MemoryUnmap, addr, length);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn file_seek(handle: usize, offset: i64, whence: usize) -> Result<u64, ()> {
+    syscall_result(scarlet_sys::syscall3(Syscall::FileSeek, handle, offset as usize, whence))
+        .map(|position| position as u64)
+}
+
+#[inline]
+pub fn file_truncate(handle: usize, length: u64) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(Syscall::FileTruncate, handle, length as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub(crate) fn file_metadata(handle: usize, metadata: &mut RawFileMetadata) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(
+        Syscall::FileMetadata,
+        handle,
+        (metadata as *mut RawFileMetadata) as usize,
+    );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_open(path: *const u8, flags: usize, mode: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall3(Syscall::VfsOpen, path as usize, flags, mode))
+}
+
+#[inline]
+pub fn vfs_remove(path: *const u8) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall1(Syscall::VfsRemove, path as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_create_file(path: *const u8, mode: usize) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(Syscall::VfsCreateFile, path as usize, mode);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_create_directory(path: *const u8) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall1(Syscall::VfsCreateDirectory, path as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_create_symlink(symlink_path: *const u8, target_path: *const u8) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(
+        Syscall::VfsCreateSymlink,
+        symlink_path as usize,
+        target_path as usize,
+    );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_change_directory(path: *const u8) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall1(Syscall::VfsChangeDirectory, path as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn vfs_readlink(path: *const u8, buffer: &mut [u8]) -> Result<usize, ()> {
+    let ret = scarlet_sys::syscall3(
+        Syscall::VfsReadlink,
+        path as usize,
+        buffer.as_mut_ptr() as usize,
+        buffer.len(),
+    );
+    if ret == SYSCALL_ERROR || ret > buffer.len() { Err(()) } else { Ok(ret) }
+}
+
+#[inline]
+pub fn vfs_get_cwd_path(buffer: &mut [u8]) -> Result<usize, ()> {
+    let ret =
+        scarlet_sys::syscall2(Syscall::VfsGetCwdPath, buffer.as_mut_ptr() as usize, buffer.len());
+    if ret == SYSCALL_ERROR || ret > buffer.len() { Err(()) } else { Ok(ret) }
+}
+
+#[inline]
+pub fn vfs_rename(old_path: *const u8, new_path: *const u8) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(Syscall::VfsRename, old_path as usize, new_path as usize);
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub(crate) fn vfs_metadata(path: *const u8, metadata: &mut RawFileMetadata) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(
+        Syscall::VfsMetadata,
+        path as usize,
+        (metadata as *mut RawFileMetadata) as usize,
+    );
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }

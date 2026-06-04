@@ -260,10 +260,13 @@ pub(crate) fn create_object_file(sess: &Session) -> Option<write::Object<'static
 }
 
 pub(super) fn elf_os_abi(sess: &Session) -> u8 {
+    const ELFOSABI_SCARLET: u8 = 83;
+
     match sess.target.options.os {
         Os::Hermit => elf::ELFOSABI_STANDALONE,
         Os::FreeBsd => elf::ELFOSABI_FREEBSD,
         Os::Solaris => elf::ELFOSABI_SOLARIS,
+        Os::Scarlet => ELFOSABI_SCARLET,
         _ => elf::ELFOSABI_NONE,
     }
 }

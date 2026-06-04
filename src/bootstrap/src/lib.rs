@@ -841,8 +841,8 @@ impl Build {
             features.insert("profiler");
         }
 
-        // If zkvm target, generate memcpy, etc.
-        if target.contains("zkvm") {
+        // If the target has no libc providing memcpy, etc., generate them.
+        if target.contains("scarlet") || target.contains("zkvm") {
             features.insert("compiler-builtins-mem");
         }
 

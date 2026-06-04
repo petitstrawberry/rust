@@ -12,7 +12,7 @@ pub(crate) fn target() -> Target {
             host_tools: Some(false),
             std: Some(true),
         },
-        llvm_target: "riscv64".into(),
+        llvm_target: "riscv64-unknown-scarlet".into(),
         pointer_width: 64,
         arch: Arch::RiscV64,
 
@@ -25,6 +25,7 @@ pub(crate) fn target() -> Target {
             max_atomic_width: Some(64),
             features: "+m,+a,+f,+d,+c,+zicsr,+zifencei".into(),
             panic_strategy: PanicStrategy::Abort,
+            main_needs_argc_argv: true,
             relocation_model: RelocModel::Static,
             code_model: Some(CodeModel::Medium),
             emit_debug_gdb_scripts: false,

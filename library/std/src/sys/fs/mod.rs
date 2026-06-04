@@ -33,6 +33,10 @@ cfg_select! {
         mod motor;
         use motor as imp;
     }
+    target_os = "scarlet" => {
+        mod scarlet;
+        use scarlet as imp;
+    }
     target_os = "solid_asp3" => {
         mod solid;
         use solid as imp;
