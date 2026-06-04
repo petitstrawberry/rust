@@ -15,38 +15,8 @@ pub fn pipe() -> io::Result<(Pipe, Pipe)> {
 
 impl Pipe {
     pub(crate) fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
-        let source = if self.handle == target {
-            Some(
-                abi::handle_duplicate(self.handle)
-                    .map_err(|()| io::Error::from(io::ErrorKind::Other))?,
-            )
-        } else {
-            None
-        };
-        let source = source.unwrap_or(self.handle);
-
-        let _ = abi::handle_close(target);
-        let duplicated = match abi::handle_duplicate(source) {
-            Ok(handle) => handle,
-            Err(()) => {
-                if source != self.handle {
-                    let _ = abi::handle_close(source);
-                }
-                return Err(io::Error::from(io::ErrorKind::Other));
-            }
-        };
-        if source != self.handle {
-            let _ = abi::handle_close(source);
-        }
-        if duplicated == target {
-            Ok(())
-        } else {
-            let _ = abi::handle_close(duplicated);
-            Err(io::const_error!(
-                io::ErrorKind::Uncategorized,
-                "Scarlet stdio handle remap returned an unexpected handle"
-            ))
-        }
+        abi::handle_duplicate_to(self.handle, target)
+            .map_err(|()| io::Error::from(io::ErrorKind::Other))
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {

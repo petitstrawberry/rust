@@ -326,6 +326,11 @@ impl File {
             .map_err(|()| io::ErrorKind::Other.into())
     }
 
+    pub(crate) fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
+        abi::handle_duplicate_to(self.handle, target)
+            .map_err(|()| io::Error::from(io::ErrorKind::Other))
+    }
+
     pub fn set_permissions(&self, _perm: FilePermissions) -> io::Result<()> {
         // TODO(scarlet): add a Native FileObject permission mutation syscall
         // once VFS nodes support chmod-style updates.

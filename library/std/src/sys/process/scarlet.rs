@@ -4,7 +4,7 @@ use crate::ffi::{CString, OsStr, OsString};
 use crate::num::NonZero;
 use crate::path::{Path, PathBuf};
 use crate::process::StdioPipes;
-use crate::sys::fs::File;
+use crate::sys::fs::{File, OpenOptions};
 use crate::sys::pal::abi;
 use crate::{fmt, fs, io, str};
 
@@ -33,7 +33,6 @@ pub enum Stdio {
     ParentStdout,
     ParentStderr,
     Pipe(ChildPipe),
-    #[allow(dead_code)] // This variant exists only for the Debug impl for now.
     InheritFile(File),
 }
 
@@ -143,7 +142,7 @@ fn setup_stdio_slot(
     use_default: bool,
     readable: bool,
     role: StdioRole,
-) -> io::Result<(Option<ChildPipe>, Option<ChildPipe>)> {
+) -> io::Result<(Option<ChildStdioHandle>, Option<ChildPipe>)> {
     let stdio = match configured {
         Some(stdio) => stdio,
         None if use_default => default,
@@ -154,35 +153,30 @@ fn setup_stdio_slot(
         (_, Stdio::Inherit) => Ok((None, None)),
         (StdioRole::Stdout, Stdio::ParentStdout) => Ok((None, None)),
         (StdioRole::Stderr, Stdio::ParentStderr) => Ok((None, None)),
-        (_, Stdio::Pipe(pipe)) => Ok((Some(pipe.try_clone()?), None)),
+        (_, Stdio::ParentStdout) => {
+            Ok((Some(ChildStdioHandle::duplicate_parent(abi::STDOUT_HANDLE)?), None))
+        }
+        (_, Stdio::ParentStderr) => {
+            Ok((Some(ChildStdioHandle::duplicate_parent(abi::STDERR_HANDLE)?), None))
+        }
+        (_, Stdio::Null) => Ok((Some(ChildStdioHandle::File(open_null_stdio(readable)?)), None)),
+        (_, Stdio::Pipe(pipe)) => Ok((Some(ChildStdioHandle::Pipe(pipe.try_clone()?)), None)),
+        (_, Stdio::InheritFile(file)) => {
+            Ok((Some(ChildStdioHandle::File(file.duplicate()?)), None))
+        }
         (_, Stdio::MakePipe) => {
             let (reader, writer) = crate::sys::pipe::pipe()?;
             let (parent, child) = if readable { (writer, reader) } else { (reader, writer) };
-            Ok((Some(child), Some(parent)))
+            Ok((Some(ChildStdioHandle::Pipe(child)), Some(parent)))
         }
-        // TODO(scarlet): support Null, InheritFile, and cross-stream
-        // ParentStdout/ParentStderr once Native has null-device and file-handle
-        // stdio setup paths in this PAL.
-        _ => unsupported_process(match (role, stdio) {
-            (StdioRole::Stdin, Stdio::Null) => "stdin null stdio is not supported yet",
-            (StdioRole::Stdout, Stdio::Null) => "stdout null stdio is not supported yet",
-            (StdioRole::Stderr, Stdio::Null) => "stderr null stdio is not supported yet",
-            (StdioRole::Stdin, Stdio::InheritFile(_)) => "stdin file stdio is not supported yet",
-            (StdioRole::Stdout, Stdio::InheritFile(_)) => "stdout file stdio is not supported yet",
-            (StdioRole::Stderr, Stdio::InheritFile(_)) => "stderr file stdio is not supported yet",
-            (StdioRole::Stdin, Stdio::ParentStdout | Stdio::ParentStderr) => {
-                "stdin cross-stream stdio is not supported"
-            }
-            (StdioRole::Stdout, Stdio::ParentStderr) => {
-                "stdout cross-stream stdio is not supported"
-            }
-            (StdioRole::Stderr, Stdio::ParentStdout) => {
-                "stderr cross-stream stdio is not supported"
-            }
-            (_, Stdio::Pipe(_)) => "pipe stdio is not supported for this stream",
-            _ => "stdio configuration is not supported yet",
-        }),
     }
+}
+
+fn open_null_stdio(readable: bool) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(readable);
+    options.write(!readable);
+    File::open(Path::new("/dev/null"), &options)
 }
 
 #[derive(Clone, Copy)]
@@ -193,23 +187,68 @@ enum StdioRole {
 }
 
 struct ChildStdio {
-    stdin: Option<ChildPipe>,
-    stdout: Option<ChildPipe>,
-    stderr: Option<ChildPipe>,
+    stdin: Option<ChildStdioHandle>,
+    stdout: Option<ChildStdioHandle>,
+    stderr: Option<ChildStdioHandle>,
 }
 
 impl ChildStdio {
     fn apply_in_child(self) -> io::Result<()> {
-        if let Some(pipe) = self.stdin {
-            pipe.duplicate_to_stdio(abi::STDIN_HANDLE)?;
+        if let Some(handle) = self.stdin {
+            handle.duplicate_to_stdio(abi::STDIN_HANDLE)?;
         }
-        if let Some(pipe) = self.stdout {
-            pipe.duplicate_to_stdio(abi::STDOUT_HANDLE)?;
+        if let Some(handle) = self.stdout {
+            handle.duplicate_to_stdio(abi::STDOUT_HANDLE)?;
         }
-        if let Some(pipe) = self.stderr {
-            pipe.duplicate_to_stdio(abi::STDERR_HANDLE)?;
+        if let Some(handle) = self.stderr {
+            handle.duplicate_to_stdio(abi::STDERR_HANDLE)?;
         }
         Ok(())
+    }
+}
+
+enum ChildStdioHandle {
+    Pipe(ChildPipe),
+    File(File),
+    DuplicatedParent(DuplicatedParentHandle),
+}
+
+impl ChildStdioHandle {
+    fn duplicate_parent(parent_handle: usize) -> io::Result<Self> {
+        DuplicatedParentHandle::duplicate(parent_handle).map(Self::DuplicatedParent)
+    }
+
+    fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
+        match self {
+            ChildStdioHandle::Pipe(pipe) => pipe.duplicate_to_stdio(target),
+            ChildStdioHandle::File(file) => file.duplicate_to_stdio(target),
+            ChildStdioHandle::DuplicatedParent(parent_handle) => {
+                parent_handle.duplicate_to_stdio(target)
+            }
+        }
+    }
+}
+
+struct DuplicatedParentHandle {
+    handle: usize,
+}
+
+impl DuplicatedParentHandle {
+    fn duplicate(parent_handle: usize) -> io::Result<Self> {
+        abi::handle_duplicate(parent_handle)
+            .map(|handle| Self { handle })
+            .map_err(|()| io::Error::from(io::ErrorKind::Other))
+    }
+
+    fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
+        abi::handle_duplicate_to(self.handle, target)
+            .map_err(|()| io::Error::from(io::ErrorKind::Other))
+    }
+}
+
+impl Drop for DuplicatedParentHandle {
+    fn drop(&mut self) {
+        let _ = abi::handle_close(self.handle);
     }
 }
 
@@ -313,10 +352,28 @@ fn bytes_to_cstring(value: Vec<u8>) -> io::Result<CString> {
     CString::new(value).map_err(|_| io::ErrorKind::InvalidInput.into())
 }
 
-pub fn output(_cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-    // TODO(scarlet): implement this with Stdio::MakePipe once child stdio
-    // handle remapping is available in the Native ABI.
-    unsupported_process("Command::output is not supported until child stdio pipes are available")
+pub fn output(cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+    let (mut process, mut pipes) = cmd.spawn(Stdio::MakePipe, false)?;
+
+    drop(pipes.stdin.take());
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+
+    match (pipes.stdout.take(), pipes.stderr.take()) {
+        (None, None) => {}
+        (Some(out), None) => {
+            out.read_to_end(&mut stdout)?;
+        }
+        (None, Some(err)) => {
+            err.read_to_end(&mut stderr)?;
+        }
+        (Some(out), Some(err)) => {
+            read_output(out, &mut stdout, err, &mut stderr)?;
+        }
+    }
+
+    let status = process.wait()?;
+    Ok((status, stdout, stderr))
 }
 
 impl From<ChildPipe> for Stdio {
@@ -521,13 +578,30 @@ impl<'a> fmt::Debug for CommandArgs<'a> {
 pub type ChildPipe = crate::sys::pipe::Pipe;
 
 pub fn read_output(
-    _out: ChildPipe,
-    _stdout: &mut Vec<u8>,
-    _err: ChildPipe,
-    _stderr: &mut Vec<u8>,
+    out: ChildPipe,
+    stdout: &mut Vec<u8>,
+    err: ChildPipe,
+    stderr: &mut Vec<u8>,
 ) -> io::Result<()> {
-    // TODO(scarlet): implement concurrent pipe draining for Command::output().
-    unsupported_process("read_output is not supported until Command::output pipes are available")
+    let stdout_reader = crate::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        out.read_to_end(&mut buffer).map(|_| buffer)
+    });
+    let stderr_reader = crate::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        err.read_to_end(&mut buffer).map(|_| buffer)
+    });
+
+    *stdout = join_pipe_reader(stdout_reader, "stdout reader thread panicked")?;
+    *stderr = join_pipe_reader(stderr_reader, "stderr reader thread panicked")?;
+    Ok(())
+}
+
+fn join_pipe_reader(
+    reader: crate::thread::JoinHandle<io::Result<Vec<u8>>>,
+    panic_message: &'static str,
+) -> io::Result<Vec<u8>> {
+    reader.join().map_err(|_| io::Error::new(io::ErrorKind::Other, panic_message))?
 }
 
 fn unsupported_process<T>(message: &'static str) -> io::Result<T> {

@@ -68,6 +68,35 @@ pub fn handle_duplicate(handle: usize) -> Result<usize, ()> {
 }
 
 #[inline]
+pub fn handle_duplicate_to(source_handle: usize, target_handle: usize) -> Result<(), ()> {
+    let temporary_source_handle =
+        if source_handle == target_handle { Some(handle_duplicate(source_handle)?) } else { None };
+    let source_handle = temporary_source_handle.unwrap_or(source_handle);
+
+    let _ = handle_close(target_handle);
+    let duplicated_handle = match handle_duplicate(source_handle) {
+        Ok(handle) => handle,
+        Err(()) => {
+            if let Some(temporary_source_handle) = temporary_source_handle {
+                let _ = handle_close(temporary_source_handle);
+            }
+            return Err(());
+        }
+    };
+
+    if let Some(temporary_source_handle) = temporary_source_handle {
+        let _ = handle_close(temporary_source_handle);
+    }
+
+    if duplicated_handle == target_handle {
+        Ok(())
+    } else {
+        let _ = handle_close(duplicated_handle);
+        Err(())
+    }
+}
+
+#[inline]
 pub fn pipe() -> Result<(usize, usize), ()> {
     let mut pipefd = [0u32; 2];
     let ret = scarlet_sys::syscall2(Syscall::Pipe, pipefd.as_mut_ptr() as usize, 0);
