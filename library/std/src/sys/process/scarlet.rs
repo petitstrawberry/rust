@@ -32,6 +32,7 @@ pub enum Stdio {
     MakePipe,
     ParentStdout,
     ParentStderr,
+    Pipe(ChildPipe),
     #[allow(dead_code)] // This variant exists only for the Debug impl for now.
     InheritFile(File),
 }
@@ -100,47 +101,72 @@ impl Command {
         default: Stdio,
         needs_stdin: bool,
     ) -> io::Result<(Process, StdioPipes)> {
-        validate_stdio(self.stdin.as_ref(), &default, needs_stdin, StdioRole::Stdin)?;
-        validate_stdio(self.stdout.as_ref(), &default, true, StdioRole::Stdout)?;
-        validate_stdio(self.stderr.as_ref(), &default, true, StdioRole::Stderr)?;
+        let (child_stdio, pipes) = self.setup_stdio(&default, needs_stdin)?;
 
         let prepared = PreparedCommand::new(self)?;
         let pid = abi::clone_process(0).map_err(|()| io::ErrorKind::Other)?;
 
         if pid == 0 {
+            drop(pipes);
+            if child_stdio.apply_in_child().is_err() {
+                abi::exit_group(127);
+            }
             prepared.exec_in_child();
         }
 
-        Ok((Process { pid: pid as i32 }, StdioPipes { stdin: None, stdout: None, stderr: None }))
+        drop(child_stdio);
+        Ok((Process { pid: pid as i32 }, pipes))
+    }
+
+    fn setup_stdio(
+        &self,
+        default: &Stdio,
+        needs_stdin: bool,
+    ) -> io::Result<(ChildStdio, StdioPipes)> {
+        let (stdin_child, stdin_parent) =
+            setup_stdio_slot(self.stdin.as_ref(), default, needs_stdin, true, StdioRole::Stdin)?;
+        let (stdout_child, stdout_parent) =
+            setup_stdio_slot(self.stdout.as_ref(), default, true, false, StdioRole::Stdout)?;
+        let (stderr_child, stderr_parent) =
+            setup_stdio_slot(self.stderr.as_ref(), default, true, false, StdioRole::Stderr)?;
+
+        Ok((
+            ChildStdio { stdin: stdin_child, stdout: stdout_child, stderr: stderr_child },
+            StdioPipes { stdin: stdin_parent, stdout: stdout_parent, stderr: stderr_parent },
+        ))
     }
 }
 
-fn validate_stdio(
+fn setup_stdio_slot(
     configured: Option<&Stdio>,
     default: &Stdio,
     use_default: bool,
+    readable: bool,
     role: StdioRole,
-) -> io::Result<()> {
+) -> io::Result<(Option<ChildPipe>, Option<ChildPipe>)> {
     let stdio = match configured {
         Some(stdio) => stdio,
         None if use_default => default,
-        None => return Ok(()),
+        None => return Ok((None, None)),
     };
 
     match (role, stdio) {
-        (_, Stdio::Inherit) => Ok(()),
-        (StdioRole::Stdout, Stdio::ParentStdout) => Ok(()),
-        (StdioRole::Stderr, Stdio::ParentStderr) => Ok(()),
-        // TODO(scarlet): support Null, MakePipe, InheritFile, and cross-stream
-        // ParentStdout/ParentStderr once Native has handle remapping semantics
-        // for child stdio setup.
+        (_, Stdio::Inherit) => Ok((None, None)),
+        (StdioRole::Stdout, Stdio::ParentStdout) => Ok((None, None)),
+        (StdioRole::Stderr, Stdio::ParentStderr) => Ok((None, None)),
+        (_, Stdio::Pipe(pipe)) => Ok((Some(pipe.try_clone()?), None)),
+        (_, Stdio::MakePipe) => {
+            let (reader, writer) = crate::sys::pipe::pipe()?;
+            let (parent, child) = if readable { (writer, reader) } else { (reader, writer) };
+            Ok((Some(child), Some(parent)))
+        }
+        // TODO(scarlet): support Null, InheritFile, and cross-stream
+        // ParentStdout/ParentStderr once Native has null-device and file-handle
+        // stdio setup paths in this PAL.
         _ => unsupported_process(match (role, stdio) {
             (StdioRole::Stdin, Stdio::Null) => "stdin null stdio is not supported yet",
             (StdioRole::Stdout, Stdio::Null) => "stdout null stdio is not supported yet",
             (StdioRole::Stderr, Stdio::Null) => "stderr null stdio is not supported yet",
-            (StdioRole::Stdin, Stdio::MakePipe) => "stdin pipe stdio is not supported yet",
-            (StdioRole::Stdout, Stdio::MakePipe) => "stdout pipe stdio is not supported yet",
-            (StdioRole::Stderr, Stdio::MakePipe) => "stderr pipe stdio is not supported yet",
             (StdioRole::Stdin, Stdio::InheritFile(_)) => "stdin file stdio is not supported yet",
             (StdioRole::Stdout, Stdio::InheritFile(_)) => "stdout file stdio is not supported yet",
             (StdioRole::Stderr, Stdio::InheritFile(_)) => "stderr file stdio is not supported yet",
@@ -153,6 +179,7 @@ fn validate_stdio(
             (StdioRole::Stderr, Stdio::ParentStdout) => {
                 "stderr cross-stream stdio is not supported"
             }
+            (_, Stdio::Pipe(_)) => "pipe stdio is not supported for this stream",
             _ => "stdio configuration is not supported yet",
         }),
     }
@@ -163,6 +190,27 @@ enum StdioRole {
     Stdin,
     Stdout,
     Stderr,
+}
+
+struct ChildStdio {
+    stdin: Option<ChildPipe>,
+    stdout: Option<ChildPipe>,
+    stderr: Option<ChildPipe>,
+}
+
+impl ChildStdio {
+    fn apply_in_child(self) -> io::Result<()> {
+        if let Some(pipe) = self.stdin {
+            pipe.duplicate_to_stdio(abi::STDIN_HANDLE)?;
+        }
+        if let Some(pipe) = self.stdout {
+            pipe.duplicate_to_stdio(abi::STDOUT_HANDLE)?;
+        }
+        if let Some(pipe) = self.stderr {
+            pipe.duplicate_to_stdio(abi::STDERR_HANDLE)?;
+        }
+        Ok(())
+    }
 }
 
 struct PreparedCommand {
@@ -273,7 +321,7 @@ pub fn output(_cmd: &mut Command) -> io::Result<(ExitStatus, Vec<u8>, Vec<u8>)> 
 
 impl From<ChildPipe> for Stdio {
     fn from(pipe: ChildPipe) -> Stdio {
-        pipe.diverge()
+        Stdio::Pipe(pipe)
     }
 }
 
