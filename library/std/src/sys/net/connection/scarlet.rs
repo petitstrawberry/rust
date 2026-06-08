@@ -5,8 +5,11 @@ use crate::sync::Mutex;
 use crate::sys::pal::abi;
 use crate::sys::unsupported;
 use crate::time::Duration;
-use crate::vec::IntoIter;
+use crate::vec::{IntoIter, Vec};
 use crate::{fmt, vec};
+
+const RESOLVERD_SOCKET_PATH: &str = "/tmp/resolverd.sock";
+const RESOLVERD_RESPONSE_LIMIT: usize = 4096;
 
 pub struct TcpStream {
     handle: usize,
@@ -466,9 +469,128 @@ pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
     if Ipv6Addr::from_str(host).is_ok() {
         return Err(io::ErrorKind::Unsupported.into());
     }
-    // TODO(scarlet): add DNS resolver integration once the kernel/user resolver
-    // contract is settled.
-    unsupported()
+
+    Ok(LookupHost { addrs: resolverd_lookup_ipv4(host, port)?.into_iter() })
+}
+
+fn resolverd_lookup_ipv4(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    if !is_valid_hostname(host) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid hostname"));
+    }
+
+    let handle = abi::socket_create(
+        abi::SOCKET_DOMAIN_LOCAL,
+        abi::SOCKET_TYPE_STREAM,
+        abi::SOCKET_PROTOCOL_DEFAULT,
+    )
+    .map_err(|()| io::ErrorKind::Other)?;
+    let socket = ResolverSocket { handle };
+
+    abi::socket_connect_local(socket.handle, RESOLVERD_SOCKET_PATH.as_bytes())
+        .map_err(|()| io::Error::new(io::ErrorKind::ConnectionRefused, "resolverd unavailable"))?;
+
+    let mut request = Vec::with_capacity(host.len() + 3);
+    request.extend_from_slice(b"A ");
+    request.extend_from_slice(host.as_bytes());
+    request.push(b'\n');
+    socket.write_all(&request)?;
+
+    parse_resolver_response(&socket.read_response()?, port)
+}
+
+struct ResolverSocket {
+    handle: usize,
+}
+
+impl ResolverSocket {
+    fn write_all(&self, mut data: &[u8]) -> io::Result<()> {
+        while !data.is_empty() {
+            let written = abi::stream_write(self.handle, data)
+                .map_err(|()| io::Error::new(io::ErrorKind::Other, "resolver write failed"))?;
+            if written == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "resolver write returned zero",
+                ));
+            }
+            data = &data[written..];
+        }
+        Ok(())
+    }
+
+    fn read_response(&self) -> io::Result<Vec<u8>> {
+        let mut response = Vec::new();
+        let mut buf = [0; 256];
+        loop {
+            let read = abi::stream_read(self.handle, &mut buf)
+                .map_err(|()| io::Error::new(io::ErrorKind::Other, "resolver read failed"))?;
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&buf[..read]);
+            if response.contains(&b'\n') {
+                break;
+            }
+            if response.len() > RESOLVERD_RESPONSE_LIMIT {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "resolver response is too large",
+                ));
+            }
+        }
+        Ok(response)
+    }
+}
+
+impl Drop for ResolverSocket {
+    fn drop(&mut self) {
+        let _ = abi::handle_close(self.handle);
+    }
+}
+
+fn parse_resolver_response(response: &[u8], port: u16) -> io::Result<Vec<SocketAddr>> {
+    let text = crate::str::from_utf8(response)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "resolver response is not UTF-8"))?
+        .trim();
+
+    let Some(rest) = text.strip_prefix("OK ") else {
+        return Err(io::Error::new(io::ErrorKind::Other, "resolver error"));
+    };
+
+    let mut addrs = Vec::new();
+    for item in rest.split_whitespace() {
+        let addr = Ipv4Addr::from_str(item).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "resolver returned invalid IPv4")
+        })?;
+        addrs.push(SocketAddr::from(SocketAddrV4::new(addr, port)));
+    }
+
+    if addrs.is_empty() {
+        Err(io::Error::new(io::ErrorKind::NotFound, "resolver returned no addresses"))
+    } else {
+        Ok(addrs)
+    }
+}
+
+fn is_valid_hostname(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+
+    for label in host.trim_end_matches('.').split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        let bytes = label.as_bytes();
+        if bytes.first() == Some(&b'-') || bytes.last() == Some(&b'-') {
+            return false;
+        }
+        if !bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-') {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn socket_addr_to_raw_v4(addr: &SocketAddr) -> io::Result<abi::Inet4SocketAddress> {

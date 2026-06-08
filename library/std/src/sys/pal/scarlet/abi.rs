@@ -13,8 +13,10 @@ pub const STDOUT_HANDLE: usize = 1;
 pub const STDERR_HANDLE: usize = 2;
 
 pub const SOCKET_DOMAIN_INET4: usize = 2;
+pub const SOCKET_DOMAIN_LOCAL: usize = 1;
 pub const SOCKET_TYPE_STREAM: usize = 1;
 pub const SOCKET_TYPE_DATAGRAM: usize = 2;
+pub const SOCKET_PROTOCOL_DEFAULT: usize = 0;
 pub const SOCKET_PROTOCOL_TCP: usize = 6;
 pub const SOCKET_PROTOCOL_UDP: usize = 17;
 pub const SOCKET_SHUTDOWN_READ: usize = 0;
@@ -365,6 +367,13 @@ pub fn socket_connect_inet(handle: usize, address: &Inet4SocketAddress) -> Resul
         (address as *const Inet4SocketAddress) as usize,
         size_of::<Inet4SocketAddress>(),
     );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn socket_connect_local(handle: usize, path: &[u8]) -> Result<(), ()> {
+    let ret =
+        scarlet_sys::syscall3(Syscall::SocketConnect, handle, path.as_ptr() as usize, path.len());
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }
 
