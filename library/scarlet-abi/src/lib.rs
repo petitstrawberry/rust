@@ -85,7 +85,9 @@ pub enum Syscall {
 
     Sleep = 20,
     Yield = 21,
+    GetRandom = 22,
     ExitGroup = 23,
+    MonotonicTime = 35,
 
     // Process information
     GetTaskInfoCount = 24,

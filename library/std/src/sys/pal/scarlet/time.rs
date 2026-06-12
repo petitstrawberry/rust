@@ -1,3 +1,4 @@
+use crate::sys::pal::abi;
 use crate::time::Duration;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -10,10 +11,9 @@ pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::from_secs(0));
 
 impl Instant {
     pub fn now() -> Instant {
-        // TODO(scarlet): expose a monotonic clock through the Native ABI.
-        // Kernel-internal boot time helpers need an ABI contract before std can
-        // rely on Instant semantics.
-        panic!("time not implemented on this platform")
+        Instant(Duration::from_nanos(
+            abi::monotonic_time_ns().expect("failed to read Scarlet monotonic time"),
+        ))
     }
 
     pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {

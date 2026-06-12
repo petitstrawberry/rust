@@ -117,9 +117,20 @@ pub fn sleep(nanoseconds: u64) -> Result<(), ()> {
 }
 
 #[inline]
+pub fn monotonic_time_ns() -> Result<u64, ()> {
+    syscall_result(scarlet_sys::syscall0(Syscall::MonotonicTime)).map(|ns| ns as u64)
+}
+
+#[inline]
 pub fn thread_yield() -> Result<(), ()> {
     let ret = scarlet_sys::syscall0(Syscall::Yield);
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn get_random(data: &mut [u8]) -> Result<usize, ()> {
+    let ret = scarlet_sys::syscall3(Syscall::GetRandom, data.as_mut_ptr() as usize, data.len(), 0);
+    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
 }
 
 #[inline]
