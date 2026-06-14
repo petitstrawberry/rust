@@ -41,24 +41,28 @@ impl TcpStream {
         unsupported()
     }
 
-    pub fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        // TODO(scarlet): add socket read timeout operations.
-        unsupported()
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        let timeout_ms = duration_to_timeout_ms(dur)?;
+        abi::socket_set_read_timeout_ms(self.handle, timeout_ms)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
-    pub fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        // TODO(scarlet): add socket write timeout operations.
-        unsupported()
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        let timeout_ms = duration_to_timeout_ms(dur)?;
+        abi::socket_set_write_timeout_ms(self.handle, timeout_ms)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
-        // TODO(scarlet): add socket read timeout operations.
-        unsupported()
+        abi::socket_read_timeout_ms(self.handle)
+            .map(timeout_ms_to_duration)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
-        // TODO(scarlet): add socket write timeout operations.
-        unsupported()
+        abi::socket_write_timeout_ms(self.handle)
+            .map(timeout_ms_to_duration)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn peek(&self, _: &mut [u8]) -> io::Result<usize> {
@@ -67,7 +71,7 @@ impl TcpStream {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        abi::stream_read(self.handle, buf).map_err(|()| io::ErrorKind::Other.into())
+        stream_result_to_io(abi::stream_read_detailed(self.handle, buf))
     }
 
     pub fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
@@ -83,7 +87,7 @@ impl TcpStream {
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        abi::stream_write(self.handle, buf).map_err(|()| io::ErrorKind::Other.into())
+        stream_result_to_io(abi::stream_write_detailed(self.handle, buf))
     }
 
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -149,9 +153,9 @@ impl TcpStream {
         Ok(None)
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        // TODO(scarlet): wire this to Native socket command support.
-        unsupported()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        abi::socket_set_nonblocking(self.handle, nonblocking)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 }
 
@@ -236,9 +240,9 @@ impl TcpListener {
         Ok(None)
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        // TODO(scarlet): wire this to Native socket command support.
-        unsupported()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        abi::socket_set_nonblocking(self.handle, nonblocking)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 }
 
@@ -290,8 +294,8 @@ impl UdpSocket {
 
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         let mut raw_addr = [0; 8];
-        let len = abi::socket_recvfrom(self.handle, buf, &mut raw_addr)
-            .map_err(|()| io::ErrorKind::Other)?;
+        let len =
+            stream_result_to_io(abi::socket_recvfrom_detailed(self.handle, buf, &mut raw_addr))?;
         Ok((len, raw_v4_sockaddr_to_socket_addr(&raw_addr)?))
     }
 
@@ -312,24 +316,28 @@ impl UdpSocket {
             .map_err(|()| io::ErrorKind::Other.into())
     }
 
-    pub fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        // TODO(scarlet): add socket read timeout operations.
-        unsupported()
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        let timeout_ms = duration_to_timeout_ms(dur)?;
+        abi::socket_set_read_timeout_ms(self.handle, timeout_ms)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
-    pub fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        // TODO(scarlet): add socket write timeout operations.
-        unsupported()
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        let timeout_ms = duration_to_timeout_ms(dur)?;
+        abi::socket_set_write_timeout_ms(self.handle, timeout_ms)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
-        // TODO(scarlet): add socket read timeout operations.
-        unsupported()
+        abi::socket_read_timeout_ms(self.handle)
+            .map(timeout_ms_to_duration)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
-        // TODO(scarlet): add socket write timeout operations.
-        unsupported()
+        abi::socket_write_timeout_ms(self.handle)
+            .map(timeout_ms_to_duration)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn set_broadcast(&self, _: bool) -> io::Result<()> {
@@ -407,13 +415,13 @@ impl UdpSocket {
         Ok(None)
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        // TODO(scarlet): wire this to Native socket command support.
-        unsupported()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        abi::socket_set_nonblocking(self.handle, nonblocking)
+            .map_err(|()| io::ErrorKind::Unsupported.into())
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        abi::stream_read(self.handle, buf).map_err(|()| io::ErrorKind::Other.into())
+        stream_result_to_io(abi::stream_read_detailed(self.handle, buf))
     }
 
     pub fn peek(&self, _: &mut [u8]) -> io::Result<usize> {
@@ -422,7 +430,7 @@ impl UdpSocket {
     }
 
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
-        abi::stream_write(self.handle, buf).map_err(|()| io::ErrorKind::Other.into())
+        stream_result_to_io(abi::stream_write_detailed(self.handle, buf))
     }
 
     pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
@@ -591,6 +599,32 @@ fn is_valid_hostname(host: &str) -> bool {
     }
 
     true
+}
+
+fn stream_result_to_io(result: Result<usize, abi::SyscallError>) -> io::Result<usize> {
+    result.map_err(|err| match err {
+        abi::SyscallError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        abi::SyscallError::Failed => io::ErrorKind::Other.into(),
+    })
+}
+
+fn duration_to_timeout_ms(dur: Option<Duration>) -> io::Result<usize> {
+    let Some(dur) = dur else {
+        return Ok(0);
+    };
+    let nanos = dur.as_nanos();
+    if nanos == 0 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let timeout_ms = nanos.div_ceil(1_000_000);
+    if timeout_ms > i32::MAX as u128 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    Ok(timeout_ms as usize)
+}
+
+fn timeout_ms_to_duration(timeout_ms: usize) -> Option<Duration> {
+    if timeout_ms == 0 { None } else { Some(Duration::from_millis(timeout_ms as u64)) }
 }
 
 fn socket_addr_to_raw_v4(addr: &SocketAddr) -> io::Result<abi::Inet4SocketAddress> {

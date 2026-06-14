@@ -3,10 +3,12 @@
 use scarlet_sys::Syscall;
 pub(crate) use scarlet_sys::{
     FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR, FILE_TYPE_SYMLINK,
-    RawFileMetadata,
+    RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS, SCTL_SOCKET_GET_WRITE_TIMEOUT_MS,
+    SCTL_SOCKET_SET_NONBLOCK, SCTL_SOCKET_SET_READ_TIMEOUT_MS, SCTL_SOCKET_SET_WRITE_TIMEOUT_MS,
 };
 
 pub const SYSCALL_ERROR: usize = usize::MAX;
+const SYSCALL_EAGAIN: usize = (-(11isize)) as usize;
 
 pub const STDIN_HANDLE: usize = 0;
 pub const STDOUT_HANDLE: usize = 1;
@@ -53,6 +55,23 @@ fn syscall_result(ret: usize) -> Result<usize, ()> {
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(ret) }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyscallError {
+    Failed,
+    WouldBlock,
+}
+
+#[inline]
+fn stream_result(ret: usize, len: usize) -> Result<usize, SyscallError> {
+    if ret == SYSCALL_EAGAIN {
+        Err(SyscallError::WouldBlock)
+    } else if ret == SYSCALL_ERROR || ret > len {
+        Err(SyscallError::Failed)
+    } else {
+        Ok(ret)
+    }
+}
+
 #[inline]
 pub fn exit_group(code: i32) -> usize {
     scarlet_sys::syscall1(Syscall::ExitGroup, code as usize)
@@ -67,6 +86,11 @@ pub fn handle_close(handle: usize) -> Result<(), ()> {
 #[inline]
 pub fn handle_duplicate(handle: usize) -> Result<usize, ()> {
     syscall_result(scarlet_sys::syscall1(Syscall::HandleDuplicate, handle))
+}
+
+#[inline]
+pub fn handle_control(handle: usize, command: u32, arg: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall3(Syscall::HandleControl, handle, command as usize, arg))
 }
 
 #[inline]
@@ -213,16 +237,26 @@ pub fn exit_current_thread(code: i32) -> ! {
 
 #[inline]
 pub fn stream_read(handle: usize, data: &mut [u8]) -> Result<usize, ()> {
+    stream_read_detailed(handle, data).map_err(|_| ())
+}
+
+#[inline]
+pub fn stream_read_detailed(handle: usize, data: &mut [u8]) -> Result<usize, SyscallError> {
     let ret =
         scarlet_sys::syscall3(Syscall::StreamRead, handle, data.as_mut_ptr() as usize, data.len());
-    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
+    stream_result(ret, data.len())
 }
 
 #[inline]
 pub fn stream_write(handle: usize, data: &[u8]) -> Result<usize, ()> {
+    stream_write_detailed(handle, data).map_err(|_| ())
+}
+
+#[inline]
+pub fn stream_write_detailed(handle: usize, data: &[u8]) -> Result<usize, SyscallError> {
     let ret =
         scarlet_sys::syscall3(Syscall::StreamWrite, handle, data.as_ptr() as usize, data.len());
-    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
+    stream_result(ret, data.len())
 }
 
 #[inline]
@@ -406,7 +440,41 @@ pub fn socket_shutdown(handle: usize, how: usize) -> Result<(), ()> {
 }
 
 #[inline]
+pub fn socket_set_nonblocking(handle: usize, nonblocking: bool) -> Result<(), ()> {
+    handle_control(handle, SCTL_SOCKET_SET_NONBLOCK, usize::from(nonblocking)).map(drop)
+}
+
+#[inline]
+pub fn socket_set_read_timeout_ms(handle: usize, timeout_ms: usize) -> Result<(), ()> {
+    handle_control(handle, SCTL_SOCKET_SET_READ_TIMEOUT_MS, timeout_ms).map(drop)
+}
+
+#[inline]
+pub fn socket_set_write_timeout_ms(handle: usize, timeout_ms: usize) -> Result<(), ()> {
+    handle_control(handle, SCTL_SOCKET_SET_WRITE_TIMEOUT_MS, timeout_ms).map(drop)
+}
+
+#[inline]
+pub fn socket_read_timeout_ms(handle: usize) -> Result<usize, ()> {
+    handle_control(handle, SCTL_SOCKET_GET_READ_TIMEOUT_MS, 0)
+}
+
+#[inline]
+pub fn socket_write_timeout_ms(handle: usize) -> Result<usize, ()> {
+    handle_control(handle, SCTL_SOCKET_GET_WRITE_TIMEOUT_MS, 0)
+}
+
+#[inline]
 pub fn socket_recvfrom(handle: usize, data: &mut [u8], address: &mut [u8; 8]) -> Result<usize, ()> {
+    socket_recvfrom_detailed(handle, data, address).map_err(|_| ())
+}
+
+#[inline]
+pub fn socket_recvfrom_detailed(
+    handle: usize,
+    data: &mut [u8],
+    address: &mut [u8; 8],
+) -> Result<usize, SyscallError> {
     let ret = scarlet_sys::syscall4(
         Syscall::SocketRecvFrom,
         handle,
@@ -414,7 +482,7 @@ pub fn socket_recvfrom(handle: usize, data: &mut [u8], address: &mut [u8; 8]) ->
         data.len(),
         address.as_mut_ptr() as usize,
     );
-    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
+    stream_result(ret, data.len())
 }
 
 #[inline]
