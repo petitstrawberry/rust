@@ -36,9 +36,15 @@ impl TcpStream {
         })
     }
 
-    pub fn connect_timeout(_: &SocketAddr, _: Duration) -> io::Result<TcpStream> {
+    pub fn connect_timeout(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+        if timeout.is_zero() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+
         // TODO(scarlet): add nonblocking connect or a timed connect syscall.
-        unsupported()
+        // Until then, preserve compatibility with clients that always use
+        // connect_timeout by falling back to Scarlet's blocking connect path.
+        Self::connect(*addr)
     }
 
     pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
