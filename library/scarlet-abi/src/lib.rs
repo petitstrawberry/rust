@@ -101,6 +101,7 @@ pub enum Syscall {
     GetRandom = 22,
     ExitGroup = 23,
     MonotonicTime = 35,
+    SystemTime = 37,
 
     // Process information
     GetTaskInfoCount = 24,

@@ -146,6 +146,11 @@ pub fn monotonic_time_ns() -> Result<u64, ()> {
 }
 
 #[inline]
+pub fn system_time_ns() -> Result<u64, ()> {
+    syscall_result(scarlet_sys::syscall0(Syscall::SystemTime)).map(|ns| ns as u64)
+}
+
+#[inline]
 pub fn thread_yield() -> Result<(), ()> {
     let ret = scarlet_sys::syscall0(Syscall::Yield);
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }

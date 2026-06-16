@@ -35,9 +35,9 @@ impl SystemTime {
     pub const MIN: SystemTime = SystemTime(Duration::ZERO);
 
     pub fn now() -> SystemTime {
-        // TODO(scarlet): expose a realtime clock through the Native ABI.
-        // SystemTime must not be backed by boot-relative kernel time.
-        panic!("time not implemented on this platform")
+        SystemTime(Duration::from_nanos(
+            abi::system_time_ns().expect("failed to read Scarlet system time"),
+        ))
     }
 
     pub fn sub_time(&self, other: &SystemTime) -> Result<Duration, Duration> {
