@@ -12,7 +12,7 @@ pub(crate) fn target() -> Target {
             LinkerFlavor::Gnu(Cc::No, Lld::No),
             &["--fix-cortex-a53-843419"],
         ),
-        features: "+v8a,+strict-align,+neon".into(),
+        features: "+v8a,+lse,+strict-align,+neon".into(),
         supported_sanitizers: SanitizerSet::KCFI | SanitizerSet::KERNELADDRESS,
         relocation_model: RelocModel::Static,
         disable_redzone: true,
@@ -30,7 +30,7 @@ pub(crate) fn target() -> Target {
     Target {
         llvm_target: "aarch64-unknown-scarlet".into(),
         metadata: TargetMetadata {
-            description: Some("Scarlet Native AArch64 (ARMv8-A ISA)".into()),
+            description: Some("Scarlet Native AArch64 (ARMv8-A ISA with LSE atomics)".into()),
             tier: Some(3),
             host_tools: Some(false),
             std: Some(true),

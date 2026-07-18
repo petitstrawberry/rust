@@ -1,4 +1,4 @@
-// Generic AArch64 target for bare-metal code - Floating point enabled
+// Generic AArch64 target for bare-metal code - LSE atomics and floating point enabled
 //
 // Can be used in conjunction with the `target-feature` and
 // `target-cpu` compiler flags to opt-in more hardware-specific
@@ -20,7 +20,7 @@ pub(crate) fn target() -> Target {
             LinkerFlavor::Gnu(Cc::No, Lld::No),
             &["--fix-cortex-a53-843419"],
         ),
-        features: "+v8a,+strict-align,+neon".into(),
+        features: "+v8a,+lse,+strict-align,+neon".into(),
         supported_sanitizers: SanitizerSet::KCFI | SanitizerSet::KERNELADDRESS,
         relocation_model: RelocModel::Static,
         disable_redzone: true,
@@ -33,7 +33,7 @@ pub(crate) fn target() -> Target {
     Target {
         llvm_target: "aarch64-unknown-none".into(),
         metadata: TargetMetadata {
-            description: Some("Bare ARM64, hardfloat".into()),
+            description: Some("Bare ARM64 with LSE atomics, hardfloat".into()),
             tier: Some(2),
             host_tools: Some(false),
             std: Some(false),
