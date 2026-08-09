@@ -102,6 +102,8 @@ pub enum Syscall {
     ExitGroup = 23,
     MonotonicTime = 35,
     SystemTime = 37,
+    FutexWait = 49,
+    FutexWake = 50,
 
     // Process information
     GetTaskInfoCount = 24,

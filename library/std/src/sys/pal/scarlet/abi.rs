@@ -157,6 +157,21 @@ pub fn thread_yield() -> Result<(), ()> {
 }
 
 #[inline]
+pub fn futex_wait(address: *const u32, expected: u32, timeout_ns: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall3(
+        Syscall::FutexWait,
+        address as usize,
+        expected as usize,
+        timeout_ns,
+    ))
+}
+
+#[inline]
+pub fn futex_wake(address: *const u32, max_count: usize) -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall2(Syscall::FutexWake, address as usize, max_count))
+}
+
+#[inline]
 pub fn get_random(data: &mut [u8]) -> Result<usize, ()> {
     let ret = scarlet_sys::syscall3(Syscall::GetRandom, data.as_mut_ptr() as usize, data.len(), 0);
     if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
