@@ -4,10 +4,11 @@ use crate::ffi::{CString, OsString};
 use crate::fs::TryLockError;
 use crate::hash::Hash;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, SeekFrom};
+use crate::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::path::{Path, PathBuf};
 use crate::sys::pal::abi;
 use crate::sys::time::{SystemTime, UNIX_EPOCH};
-use crate::sys::unsupported;
+use crate::sys::{FromInner, IntoInner, unsupported};
 use crate::time::Duration;
 use crate::{fmt, str};
 
@@ -208,6 +209,25 @@ impl OpenOptions {
 }
 
 impl File {
+    /// Return the borrowed Scarlet Native handle backing this file.
+    pub(crate) fn as_raw_handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Construct a file that assumes ownership of a Scarlet Native handle.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be an exclusively owned, valid file-like handle.
+    pub(crate) unsafe fn from_raw_handle(handle: usize) -> Self {
+        Self { handle }
+    }
+
+    /// Consume the file and transfer ownership of its Scarlet Native handle.
+    pub(crate) fn into_raw_handle(self) -> usize {
+        core::mem::ManuallyDrop::new(self).handle
+    }
+
     pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
         validate_open_options(opts)?;
         let path = path_to_cstring(path)?;
@@ -347,6 +367,46 @@ impl File {
 impl Drop for File {
     fn drop(&mut self) {
         let _ = abi::handle_close(self.handle);
+    }
+}
+
+impl AsRawFd for File {
+    fn as_raw_fd(&self) -> RawFd {
+        self.as_raw_handle() as RawFd
+    }
+}
+
+impl AsFd for File {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: the returned borrow cannot outlive this owning `File`.
+        unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
+    }
+}
+
+impl IntoRawFd for File {
+    fn into_raw_fd(self) -> RawFd {
+        self.into_raw_handle() as RawFd
+    }
+}
+
+impl FromRawFd for File {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        // SAFETY: the trait contract requires an exclusively owned valid handle.
+        unsafe { Self::from_raw_handle(raw_fd as usize) }
+    }
+}
+
+impl IntoInner<OwnedFd> for File {
+    fn into_inner(self) -> OwnedFd {
+        // SAFETY: `into_raw_fd` transfers this file's unique handle ownership.
+        unsafe { OwnedFd::from_raw_fd(self.into_raw_fd()) }
+    }
+}
+
+impl FromInner<OwnedFd> for File {
+    fn from_inner(owned_fd: OwnedFd) -> Self {
+        // SAFETY: `into_raw_fd` transfers the `OwnedFd`'s unique ownership.
+        unsafe { Self::from_raw_fd(owned_fd.into_raw_fd()) }
     }
 }
 

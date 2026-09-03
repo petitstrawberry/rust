@@ -197,6 +197,7 @@ pub mod xous;
 #[cfg(any(
     unix,
     target_os = "hermit",
+    target_os = "scarlet",
     target_os = "trusty",
     target_os = "wasi",
     target_os = "motor",

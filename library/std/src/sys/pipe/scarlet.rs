@@ -1,6 +1,8 @@
 use crate::fmt;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
+use crate::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::sys::pal::abi;
+use crate::sys::{FromInner, IntoInner};
 
 #[derive(PartialEq, Eq)]
 pub struct Pipe {
@@ -14,6 +16,25 @@ pub fn pipe() -> io::Result<(Pipe, Pipe)> {
 }
 
 impl Pipe {
+    /// Return the borrowed Scarlet Native handle backing this pipe endpoint.
+    pub(crate) fn as_raw_handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Construct a pipe endpoint that assumes ownership of a Scarlet Native handle.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be an exclusively owned, valid pipe endpoint handle.
+    pub(crate) unsafe fn from_raw_handle(handle: usize) -> Self {
+        Self { handle }
+    }
+
+    /// Consume the endpoint and transfer ownership of its Scarlet Native handle.
+    pub(crate) fn into_raw_handle(self) -> usize {
+        core::mem::ManuallyDrop::new(self).handle
+    }
+
     pub(crate) fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
         abi::handle_duplicate_to(self.handle, target)
             .map_err(|()| io::Error::from(io::ErrorKind::Other))
@@ -68,6 +89,46 @@ impl Pipe {
 impl Drop for Pipe {
     fn drop(&mut self) {
         let _ = abi::handle_close(self.handle);
+    }
+}
+
+impl AsRawFd for Pipe {
+    fn as_raw_fd(&self) -> RawFd {
+        self.as_raw_handle() as RawFd
+    }
+}
+
+impl AsFd for Pipe {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: the returned borrow cannot outlive this owning pipe endpoint.
+        unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
+    }
+}
+
+impl IntoRawFd for Pipe {
+    fn into_raw_fd(self) -> RawFd {
+        self.into_raw_handle() as RawFd
+    }
+}
+
+impl FromRawFd for Pipe {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        // SAFETY: the trait contract requires an exclusively owned valid handle.
+        unsafe { Self::from_raw_handle(raw_fd as usize) }
+    }
+}
+
+impl IntoInner<OwnedFd> for Pipe {
+    fn into_inner(self) -> OwnedFd {
+        // SAFETY: `into_raw_fd` transfers this endpoint's unique handle ownership.
+        unsafe { OwnedFd::from_raw_fd(self.into_raw_fd()) }
+    }
+}
+
+impl FromInner<OwnedFd> for Pipe {
+    fn from_inner(owned_fd: OwnedFd) -> Self {
+        // SAFETY: `into_raw_fd` transfers the `OwnedFd`'s unique ownership.
+        unsafe { Self::from_raw_fd(owned_fd.into_raw_fd()) }
     }
 }
 

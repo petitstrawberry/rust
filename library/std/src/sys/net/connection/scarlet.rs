@@ -17,6 +17,25 @@ pub struct TcpStream {
 }
 
 impl TcpStream {
+    /// Return the borrowed Scarlet Native handle backing this stream.
+    pub(crate) fn as_raw_handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Construct a stream that assumes ownership of a Scarlet Native handle.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be an exclusively owned, valid TCP stream handle.
+    pub(crate) unsafe fn from_raw_handle(handle: usize) -> Self {
+        Self { handle, peer: None }
+    }
+
+    /// Consume the stream and transfer ownership of its Scarlet Native handle.
+    pub(crate) fn into_raw_handle(self) -> usize {
+        core::mem::ManuallyDrop::new(self).handle
+    }
+
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<TcpStream> {
         super::each_addr(addr, |addr| {
             let raw = socket_addr_to_raw_v4(addr)?;
@@ -26,11 +45,11 @@ impl TcpStream {
                 abi::SOCKET_PROTOCOL_TCP,
             )
             .map_err(|()| io::ErrorKind::Other)?;
-            match abi::socket_connect_inet(handle, &raw) {
+            match syscall_result_to_io(abi::socket_connect_inet(handle, &raw)) {
                 Ok(()) => Ok(TcpStream { handle, peer: Some(*addr) }),
-                Err(()) => {
+                Err(error) => {
                     let _ = abi::handle_close(handle);
-                    Err(io::ErrorKind::ConnectionRefused.into())
+                    Err(error)
                 }
             }
         })
@@ -77,7 +96,7 @@ impl TcpStream {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        stream_result_to_io(abi::stream_read_detailed(self.handle, buf))
+        syscall_result_to_io(abi::stream_read_detailed(self.handle, buf))
     }
 
     pub fn read_buf(&self, cursor: BorrowedCursor<'_>) -> io::Result<()> {
@@ -93,7 +112,7 @@ impl TcpStream {
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        stream_result_to_io(abi::stream_write_detailed(self.handle, buf))
+        syscall_result_to_io(abi::stream_write_detailed(self.handle, buf))
     }
 
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -105,17 +124,15 @@ impl TcpStream {
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        self.peer.ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))
+        query_socket_address(self.handle, true)
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        // TODO(scarlet): expose getsockname for Native sockets.
-        unsupported()
+        query_socket_address(self.handle, false)
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        abi::socket_shutdown(self.handle, shutdown_to_raw(how))
-            .map_err(|()| io::ErrorKind::Other.into())
+        syscall_result_to_io(abi::socket_shutdown(self.handle, shutdown_to_raw(how)))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpStream> {
@@ -155,8 +172,9 @@ impl TcpStream {
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        // TODO(scarlet): expose pending socket error state.
-        Ok(None)
+        abi::socket_take_error(self.handle)
+            .map(|error| error.map(io::Error::from_raw_os_error))
+            .map_err(|()| io::ErrorKind::Other.into())
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
@@ -183,6 +201,25 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
+    /// Return the borrowed Scarlet Native handle backing this listener.
+    pub(crate) fn as_raw_handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Construct a listener that assumes ownership of a Scarlet Native handle.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be an exclusively owned, valid TCP listener handle.
+    pub(crate) unsafe fn from_raw_handle(handle: usize) -> Self {
+        Self { handle, local: SocketAddr::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)) }
+    }
+
+    /// Consume the listener and transfer ownership of its Scarlet Native handle.
+    pub(crate) fn into_raw_handle(self) -> usize {
+        core::mem::ManuallyDrop::new(self).handle
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
         super::each_addr(addr, |addr| {
             let raw = socket_addr_to_raw_v4(addr)?;
@@ -195,24 +232,34 @@ impl TcpListener {
             let result =
                 abi::socket_bind_inet(handle, &raw).and_then(|()| abi::socket_listen(handle, 128));
             match result {
-                Ok(()) => Ok(TcpListener { handle, local: *addr }),
-                Err(()) => {
+                Ok(()) => match query_socket_address(handle, false) {
+                    Ok(local) => Ok(TcpListener { handle, local }),
+                    Err(error) => {
+                        let _ = abi::handle_close(handle);
+                        Err(error)
+                    }
+                },
+                Err(error) => {
                     let _ = abi::handle_close(handle);
-                    Err(io::ErrorKind::AddrInUse.into())
+                    Err(syscall_error_to_io(error))
                 }
             }
         })
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.local)
+        query_socket_address(self.handle, false)
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        let handle = abi::socket_accept(self.handle).map_err(|()| io::ErrorKind::Other)?;
-        let peer = SocketAddr::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-        // TODO(scarlet): make SocketAccept return the peer address.
-        Ok((TcpStream { handle, peer: None }, peer))
+        let handle = syscall_result_to_io(abi::socket_accept(self.handle))?;
+        match query_socket_address(handle, true) {
+            Ok(peer) => Ok((TcpStream { handle, peer: Some(peer) }, peer)),
+            Err(error) => {
+                let _ = abi::handle_close(handle);
+                Err(error)
+            }
+        }
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
@@ -242,8 +289,9 @@ impl TcpListener {
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        // TODO(scarlet): expose pending socket error state.
-        Ok(None)
+        abi::socket_take_error(self.handle)
+            .map(|error| error.map(io::Error::from_raw_os_error))
+            .map_err(|()| io::ErrorKind::Other.into())
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
@@ -271,6 +319,29 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
+    /// Return the borrowed Scarlet Native handle backing this socket.
+    pub(crate) fn as_raw_handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Construct a datagram socket that assumes ownership of a Scarlet Native handle.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be an exclusively owned, valid UDP socket handle.
+    pub(crate) unsafe fn from_raw_handle(handle: usize) -> Self {
+        Self {
+            handle,
+            local: SocketAddr::from(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+            peer: Mutex::new(None),
+        }
+    }
+
+    /// Consume the socket and transfer ownership of its Scarlet Native handle.
+    pub(crate) fn into_raw_handle(self) -> usize {
+        core::mem::ManuallyDrop::new(self).handle
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
         super::each_addr(addr, |addr| {
             let raw = socket_addr_to_raw_v4(addr)?;
@@ -281,27 +352,33 @@ impl UdpSocket {
             )
             .map_err(|()| io::ErrorKind::Other)?;
             match abi::socket_bind_inet(handle, &raw) {
-                Ok(()) => Ok(UdpSocket { handle, local: *addr, peer: Mutex::new(None) }),
-                Err(()) => {
+                Ok(()) => match query_socket_address(handle, false) {
+                    Ok(local) => Ok(UdpSocket { handle, local, peer: Mutex::new(None) }),
+                    Err(error) => {
+                        let _ = abi::handle_close(handle);
+                        Err(error)
+                    }
+                },
+                Err(error) => {
                     let _ = abi::handle_close(handle);
-                    Err(io::ErrorKind::AddrInUse.into())
+                    Err(syscall_error_to_io(error))
                 }
             }
         })
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        self.peer.lock().unwrap().ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))
+        query_socket_address(self.handle, true)
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.local)
+        query_socket_address(self.handle, false)
     }
 
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         let mut raw_addr = [0; 8];
         let len =
-            stream_result_to_io(abi::socket_recvfrom_detailed(self.handle, buf, &mut raw_addr))?;
+            syscall_result_to_io(abi::socket_recvfrom_detailed(self.handle, buf, &mut raw_addr))?;
         Ok((len, raw_v4_sockaddr_to_socket_addr(&raw_addr)?))
     }
 
@@ -312,7 +389,7 @@ impl UdpSocket {
 
     pub fn send_to(&self, buf: &[u8], addr: &SocketAddr) -> io::Result<usize> {
         let raw_addr = socket_addr_to_raw_v4_sockaddr(addr)?;
-        abi::socket_sendto(self.handle, buf, &raw_addr).map_err(|()| io::ErrorKind::Other.into())
+        syscall_result_to_io(abi::socket_sendto(self.handle, buf, &raw_addr))
     }
 
     pub fn duplicate(&self) -> io::Result<UdpSocket> {
@@ -417,8 +494,9 @@ impl UdpSocket {
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        // TODO(scarlet): expose pending socket error state.
-        Ok(None)
+        abi::socket_take_error(self.handle)
+            .map(|error| error.map(io::Error::from_raw_os_error))
+            .map_err(|()| io::ErrorKind::Other.into())
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
@@ -427,7 +505,7 @@ impl UdpSocket {
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        stream_result_to_io(abi::stream_read_detailed(self.handle, buf))
+        syscall_result_to_io(abi::stream_read_detailed(self.handle, buf))
     }
 
     pub fn peek(&self, _: &mut [u8]) -> io::Result<usize> {
@@ -436,14 +514,13 @@ impl UdpSocket {
     }
 
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
-        stream_result_to_io(abi::stream_write_detailed(self.handle, buf))
+        syscall_result_to_io(abi::stream_write_detailed(self.handle, buf))
     }
 
     pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
         super::each_addr(addr, |addr| {
             let raw = socket_addr_to_raw_v4(addr)?;
-            abi::socket_connect_inet(self.handle, &raw)
-                .map_err(|()| io::Error::from(io::ErrorKind::ConnectionRefused))?;
+            syscall_result_to_io(abi::socket_connect_inet(self.handle, &raw))?;
             *self.peer.lock().unwrap() = Some(*addr);
             Ok(())
         })
@@ -607,11 +684,27 @@ fn is_valid_hostname(host: &str) -> bool {
     true
 }
 
-fn stream_result_to_io(result: Result<usize, abi::SyscallError>) -> io::Result<usize> {
-    result.map_err(|err| match err {
+fn syscall_result_to_io<T>(result: Result<T, abi::SyscallError>) -> io::Result<T> {
+    result.map_err(syscall_error_to_io)
+}
+
+fn syscall_error_to_io(error: abi::SyscallError) -> io::Error {
+    match error {
         abi::SyscallError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        abi::SyscallError::Interrupted => io::ErrorKind::Interrupted.into(),
+        abi::SyscallError::Os(errno) => io::Error::from_raw_os_error(errno),
         abi::SyscallError::Failed => io::ErrorKind::Other.into(),
-    })
+    }
+}
+
+fn query_socket_address(handle: usize, peer: bool) -> io::Result<SocketAddr> {
+    let mut address = [0u8; 8];
+    if peer {
+        syscall_result_to_io(abi::socket_peer_address(handle, &mut address))?;
+    } else {
+        syscall_result_to_io(abi::socket_local_address(handle, &mut address))?;
+    }
+    raw_v4_sockaddr_to_socket_addr(&address)
 }
 
 fn duration_to_timeout_ms(dur: Option<Duration>) -> io::Result<usize> {

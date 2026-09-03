@@ -2,13 +2,13 @@
 
 use scarlet_sys::Syscall;
 pub(crate) use scarlet_sys::{
-    FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR, FILE_TYPE_SYMLINK,
-    RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS, SCTL_SOCKET_GET_WRITE_TIMEOUT_MS,
-    SCTL_SOCKET_SET_NONBLOCK, SCTL_SOCKET_SET_READ_TIMEOUT_MS, SCTL_SOCKET_SET_WRITE_TIMEOUT_MS,
+    ERRNO_EAGAIN, ERRNO_EINTR, FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR,
+    FILE_TYPE_SYMLINK, RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
+    SCTL_SOCKET_GET_WRITE_TIMEOUT_MS, SCTL_SOCKET_SET_NONBLOCK, SCTL_SOCKET_SET_READ_TIMEOUT_MS,
+    SCTL_SOCKET_SET_WRITE_TIMEOUT_MS, SCTL_SOCKET_TAKE_ERROR,
 };
 
 pub const SYSCALL_ERROR: usize = usize::MAX;
-const SYSCALL_EAGAIN: usize = (-(11isize)) as usize;
 
 pub const STDIN_HANDLE: usize = 0;
 pub const STDOUT_HANDLE: usize = 1;
@@ -59,16 +59,33 @@ fn syscall_result(ret: usize) -> Result<usize, ()> {
 pub enum SyscallError {
     Failed,
     WouldBlock,
+    Interrupted,
+    Os(i32),
 }
 
 #[inline]
 fn stream_result(ret: usize, len: usize) -> Result<usize, SyscallError> {
-    if ret == SYSCALL_EAGAIN {
-        Err(SyscallError::WouldBlock)
-    } else if ret == SYSCALL_ERROR || ret > len {
-        Err(SyscallError::Failed)
-    } else {
-        Ok(ret)
+    if ret > isize::MAX as usize {
+        return match -(ret as isize) as i32 {
+            ERRNO_EAGAIN => Err(SyscallError::WouldBlock),
+            ERRNO_EINTR => Err(SyscallError::Interrupted),
+            1 => Err(SyscallError::Failed),
+            errno => Err(SyscallError::Os(errno)),
+        };
+    }
+    if ret > len { Err(SyscallError::Failed) } else { Ok(ret) }
+}
+
+#[inline]
+fn socket_result(ret: usize) -> Result<usize, SyscallError> {
+    if ret <= isize::MAX as usize {
+        return Ok(ret);
+    }
+    match -(ret as isize) as i32 {
+        ERRNO_EAGAIN => Err(SyscallError::WouldBlock),
+        ERRNO_EINTR => Err(SyscallError::Interrupted),
+        1 => Err(SyscallError::Failed),
+        errno => Err(SyscallError::Os(errno)),
     }
 }
 
@@ -414,49 +431,52 @@ pub fn socket_create(domain: usize, socket_type: usize, protocol: usize) -> Resu
 }
 
 #[inline]
-pub fn socket_bind_inet(handle: usize, address: &Inet4SocketAddress) -> Result<(), ()> {
+pub fn socket_bind_inet(handle: usize, address: &Inet4SocketAddress) -> Result<(), SyscallError> {
     let ret = scarlet_sys::syscall3(
         Syscall::SocketBind,
         handle,
         (address as *const Inet4SocketAddress) as usize,
         size_of::<Inet4SocketAddress>(),
     );
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    socket_result(ret).map(drop)
 }
 
 #[inline]
-pub fn socket_connect_inet(handle: usize, address: &Inet4SocketAddress) -> Result<(), ()> {
+pub fn socket_connect_inet(
+    handle: usize,
+    address: &Inet4SocketAddress,
+) -> Result<(), SyscallError> {
     let ret = scarlet_sys::syscall3(
         Syscall::SocketConnect,
         handle,
         (address as *const Inet4SocketAddress) as usize,
         size_of::<Inet4SocketAddress>(),
     );
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    socket_result(ret).map(drop)
 }
 
 #[inline]
 pub fn socket_connect_local(handle: usize, path: &[u8]) -> Result<(), ()> {
     let ret =
         scarlet_sys::syscall3(Syscall::SocketConnect, handle, path.as_ptr() as usize, path.len());
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    socket_result(ret).map(drop).map_err(drop)
 }
 
 #[inline]
-pub fn socket_listen(handle: usize, backlog: usize) -> Result<(), ()> {
+pub fn socket_listen(handle: usize, backlog: usize) -> Result<(), SyscallError> {
     let ret = scarlet_sys::syscall2(Syscall::SocketListen, handle, backlog);
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    socket_result(ret).map(drop)
 }
 
 #[inline]
-pub fn socket_accept(handle: usize) -> Result<usize, ()> {
-    syscall_result(scarlet_sys::syscall1(Syscall::SocketAccept, handle))
+pub fn socket_accept(handle: usize) -> Result<usize, SyscallError> {
+    socket_result(scarlet_sys::syscall1(Syscall::SocketAccept, handle))
 }
 
 #[inline]
-pub fn socket_shutdown(handle: usize, how: usize) -> Result<(), ()> {
+pub fn socket_shutdown(handle: usize, how: usize) -> Result<(), SyscallError> {
     let ret = scarlet_sys::syscall2(Syscall::SocketShutdown, handle, how);
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    socket_result(ret).map(drop)
 }
 
 #[inline]
@@ -485,6 +505,32 @@ pub fn socket_write_timeout_ms(handle: usize) -> Result<usize, ()> {
 }
 
 #[inline]
+pub fn socket_take_error(handle: usize) -> Result<Option<i32>, ()> {
+    handle_control(handle, SCTL_SOCKET_TAKE_ERROR, 0)
+        .map(|errno| (errno != 0).then_some(errno as i32))
+}
+
+#[inline]
+pub fn socket_local_address(handle: usize, address: &mut [u8; 8]) -> Result<(), SyscallError> {
+    socket_result(scarlet_sys::syscall2(
+        Syscall::SocketGetLocalAddress,
+        handle,
+        address.as_mut_ptr() as usize,
+    ))
+    .map(drop)
+}
+
+#[inline]
+pub fn socket_peer_address(handle: usize, address: &mut [u8; 8]) -> Result<(), SyscallError> {
+    socket_result(scarlet_sys::syscall2(
+        Syscall::SocketGetPeerAddress,
+        handle,
+        address.as_mut_ptr() as usize,
+    ))
+    .map(drop)
+}
+
+#[inline]
 pub fn socket_recvfrom(handle: usize, data: &mut [u8], address: &mut [u8; 8]) -> Result<usize, ()> {
     socket_recvfrom_detailed(handle, data, address).map_err(|_| ())
 }
@@ -506,7 +552,7 @@ pub fn socket_recvfrom_detailed(
 }
 
 #[inline]
-pub fn socket_sendto(handle: usize, data: &[u8], address: &[u8; 8]) -> Result<usize, ()> {
+pub fn socket_sendto(handle: usize, data: &[u8], address: &[u8; 8]) -> Result<usize, SyscallError> {
     let ret = scarlet_sys::syscall4(
         Syscall::SocketSendTo,
         handle,
@@ -514,5 +560,5 @@ pub fn socket_sendto(handle: usize, data: &[u8], address: &[u8; 8]) -> Result<us
         data.len(),
         address.as_ptr() as usize,
     );
-    if ret == SYSCALL_ERROR || ret > data.len() { Err(()) } else { Ok(ret) }
+    stream_result(ret, data.len())
 }

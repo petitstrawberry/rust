@@ -1,6 +1,6 @@
 //! Owned and borrowed Unix-like file descriptors.
 //!
-//! This module is supported on Unix platforms and WASI, which both use a
+//! This module is supported on Unix platforms, Scarlet, and WASI, which use a
 //! similar file descriptor system for referencing OS resources.
 
 #![stable(feature = "os_fd", since = "1.66.0")]
@@ -14,6 +14,7 @@ mod owned;
 
 // Implementations for `AsRawFd` etc. for network types.
 #[cfg(not(target_os = "trusty"))]
+#[cfg_attr(target_os = "scarlet", path = "net_scarlet.rs")]
 mod net;
 
 #[cfg(test)]

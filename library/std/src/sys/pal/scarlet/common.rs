@@ -23,12 +23,30 @@ pub fn unsupported_err() -> std_io::Error {
     std_io::Error::UNSUPPORTED_PLATFORM
 }
 
-pub fn is_interrupted(_code: i32) -> bool {
-    false
+pub fn is_interrupted(code: i32) -> bool {
+    code == scarlet_sys::ERRNO_EINTR
 }
 
-pub fn decode_error_kind(_code: i32) -> crate::io::ErrorKind {
-    crate::io::ErrorKind::Uncategorized
+pub fn decode_error_kind(code: i32) -> crate::io::ErrorKind {
+    match code {
+        scarlet_sys::ERRNO_EINTR => crate::io::ErrorKind::Interrupted,
+        scarlet_sys::ERRNO_EIO => crate::io::ErrorKind::Other,
+        scarlet_sys::ERRNO_EAGAIN => crate::io::ErrorKind::WouldBlock,
+        scarlet_sys::ERRNO_EINVAL => crate::io::ErrorKind::InvalidInput,
+        scarlet_sys::ERRNO_EMSGSIZE => crate::io::ErrorKind::InvalidInput,
+        scarlet_sys::ERRNO_EPROTONOSUPPORT | scarlet_sys::ERRNO_EOPNOTSUPP => {
+            crate::io::ErrorKind::Unsupported
+        }
+        scarlet_sys::ERRNO_EADDRINUSE => crate::io::ErrorKind::AddrInUse,
+        scarlet_sys::ERRNO_EADDRNOTAVAIL => crate::io::ErrorKind::AddrNotAvailable,
+        scarlet_sys::ERRNO_ENETUNREACH => crate::io::ErrorKind::NetworkUnreachable,
+        scarlet_sys::ERRNO_ECONNABORTED => crate::io::ErrorKind::ConnectionAborted,
+        scarlet_sys::ERRNO_ECONNRESET => crate::io::ErrorKind::ConnectionReset,
+        scarlet_sys::ERRNO_ENOTCONN => crate::io::ErrorKind::NotConnected,
+        scarlet_sys::ERRNO_ETIMEDOUT => crate::io::ErrorKind::TimedOut,
+        scarlet_sys::ERRNO_ECONNREFUSED => crate::io::ErrorKind::ConnectionRefused,
+        _ => crate::io::ErrorKind::Uncategorized,
+    }
 }
 
 pub fn abort_internal() -> ! {

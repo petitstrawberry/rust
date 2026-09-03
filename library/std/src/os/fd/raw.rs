@@ -7,7 +7,7 @@ use hermit_abi as libc;
 #[cfg(target_os = "motor")]
 use moto_rt::libc;
 
-#[cfg(target_os = "motor")]
+#[cfg(any(target_os = "motor", target_os = "scarlet"))]
 use super::owned::OwnedFd;
 #[cfg(not(target_os = "trusty"))]
 use crate::fs;
@@ -35,7 +35,7 @@ pub type RawFd = i32;
 
 /// A trait to extract the raw file descriptor from an underlying object.
 ///
-/// This is only available on unix and WASI platforms and must be imported in
+/// This is only available on Unix, Scarlet, and WASI platforms and must be imported in
 /// order to call the method. Windows platforms have a corresponding
 /// `AsRawHandle` and `AsRawSocket` set of traits.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -197,7 +197,14 @@ impl IntoRawFd for fs::File {
 impl AsRawFd for io::Stdin {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDIN_FILENO
+        #[cfg(target_os = "scarlet")]
+        {
+            crate::sys::abi::STDIN_HANDLE as RawFd
+        }
+        #[cfg(not(target_os = "scarlet"))]
+        {
+            libc::STDIN_FILENO
+        }
     }
 }
 
@@ -205,7 +212,14 @@ impl AsRawFd for io::Stdin {
 impl AsRawFd for io::Stdout {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDOUT_FILENO
+        #[cfg(target_os = "scarlet")]
+        {
+            crate::sys::abi::STDOUT_HANDLE as RawFd
+        }
+        #[cfg(not(target_os = "scarlet"))]
+        {
+            libc::STDOUT_FILENO
+        }
     }
 }
 
@@ -213,7 +227,14 @@ impl AsRawFd for io::Stdout {
 impl AsRawFd for io::Stderr {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDERR_FILENO
+        #[cfg(target_os = "scarlet")]
+        {
+            crate::sys::abi::STDERR_HANDLE as RawFd
+        }
+        #[cfg(not(target_os = "scarlet"))]
+        {
+            libc::STDERR_FILENO
+        }
     }
 }
 
@@ -222,7 +243,14 @@ impl AsRawFd for io::Stderr {
 impl<'a> AsRawFd for io::StdinLock<'a> {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDIN_FILENO
+        #[cfg(target_os = "scarlet")]
+        {
+            crate::sys::abi::STDIN_HANDLE as RawFd
+        }
+        #[cfg(not(target_os = "scarlet"))]
+        {
+            libc::STDIN_FILENO
+        }
     }
 }
 
@@ -230,7 +258,14 @@ impl<'a> AsRawFd for io::StdinLock<'a> {
 impl<'a> AsRawFd for io::StdoutLock<'a> {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDOUT_FILENO
+        #[cfg(target_os = "scarlet")]
+        {
+            crate::sys::abi::STDOUT_HANDLE as RawFd
+        }
+        #[cfg(not(target_os = "scarlet"))]
+        {
+            libc::STDOUT_FILENO
+        }
     }
 }
 
@@ -238,7 +273,14 @@ impl<'a> AsRawFd for io::StdoutLock<'a> {
 impl<'a> AsRawFd for io::StderrLock<'a> {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        libc::STDERR_FILENO
+        #[cfg(target_os = "scarlet")]
+        {
+            crate::sys::abi::STDERR_HANDLE as RawFd
+        }
+        #[cfg(not(target_os = "scarlet"))]
+        {
+            libc::STDERR_FILENO
+        }
     }
 }
 
