@@ -143,12 +143,24 @@ impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
-        let mut buffer = [0; size_of::<RawDirEntry>()];
-        match self.file.read(&mut buffer) {
-            Ok(0) => None,
-            Ok(n) if n < buffer.len() => Some(Err(io::ErrorKind::InvalidData.into())),
-            Ok(_) => Some(RawDirEntry::parse(&buffer).map(|raw| raw.into_dir_entry(&self.root))),
-            Err(err) => Some(Err(err)),
+        loop {
+            let mut buffer = [0; size_of::<RawDirEntry>()];
+            let raw = match self.file.read(&mut buffer) {
+                Ok(0) => return None,
+                Ok(n) if n < buffer.len() => {
+                    return Some(Err(io::ErrorKind::InvalidData.into()));
+                }
+                Ok(_) => match RawDirEntry::parse(&buffer) {
+                    Ok(raw) => raw,
+                    Err(err) => return Some(Err(err)),
+                },
+                Err(err) => return Some(Err(err)),
+            };
+            let entry = raw.into_dir_entry(&self.root);
+            if is_dot_or_dotdot(&entry.file_name) {
+                continue;
+            }
+            return Some(Ok(entry));
         }
     }
 }
