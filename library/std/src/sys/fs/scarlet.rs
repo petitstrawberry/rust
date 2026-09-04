@@ -255,7 +255,7 @@ impl File {
         }
 
         let handle = abi::vfs_open(path.as_ptr().cast(), open_flags(opts), 0)
-            .map_err(|()| io::ErrorKind::Other)?;
+            .map_err(|()| open_error(&path))?;
         Ok(File { handle })
     }
 
@@ -601,6 +601,17 @@ fn open_flags(opts: &OpenOptions) -> usize {
 fn path_to_cstring(path: &Path) -> io::Result<CString> {
     CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| io::ErrorKind::InvalidInput.into())
+}
+
+fn open_error(path: &CString) -> io::Error {
+    // The Native VFS ABI currently reports only success or failure, so probe
+    // metadata to distinguish a missing path from other open failures.
+    let mut metadata = abi::RawFileMetadata::default();
+    if abi::vfs_metadata(path.as_ptr().cast(), &mut metadata).is_err() {
+        io::ErrorKind::NotFound.into()
+    } else {
+        io::ErrorKind::Other.into()
+    }
 }
 
 fn write_all(file: &File, mut buffer: &[u8]) -> io::Result<()> {
