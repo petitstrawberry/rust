@@ -426,6 +426,16 @@ pub(crate) fn vfs_metadata(path: *const u8, metadata: &mut RawFileMetadata) -> R
 }
 
 #[inline]
+pub(crate) fn vfs_symlink_metadata(path: *const u8, metadata: &mut RawFileMetadata) -> Result<(), ()> {
+    let ret = scarlet_sys::syscall2(
+        Syscall::VfsSymlinkMetadata,
+        path as usize,
+        (metadata as *mut RawFileMetadata) as usize,
+    );
+    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
 pub fn socket_create(domain: usize, socket_type: usize, protocol: usize) -> Result<usize, ()> {
     syscall_result(scarlet_sys::syscall3(Syscall::SocketCreate, domain, socket_type, protocol))
 }

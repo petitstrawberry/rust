@@ -36,13 +36,15 @@ pub struct FileAttr {
 pub struct ReadDir {
     file: File,
     root: PathBuf,
+    metadata_root: PathBuf,
 }
 
 #[derive(Clone, Debug)]
 pub struct DirEntry {
     path: PathBuf,
+    metadata_path: PathBuf,
     file_name: OsString,
-    attr: FileAttr,
+    file_type: FileType,
 }
 
 #[derive(Clone, Debug)]
@@ -156,7 +158,7 @@ impl Iterator for ReadDir {
                 },
                 Err(err) => return Some(Err(err)),
             };
-            let entry = raw.into_dir_entry(&self.root);
+            let entry = raw.into_dir_entry(&self.root, &self.metadata_root);
             if is_dot_or_dotdot(&entry.file_name) {
                 continue;
             }
@@ -175,11 +177,11 @@ impl DirEntry {
     }
 
     pub fn metadata(&self) -> io::Result<FileAttr> {
-        Ok(self.attr)
+        lstat(&self.metadata_path)
     }
 
     pub fn file_type(&self) -> io::Result<FileType> {
-        Ok(self.attr.file_type())
+        Ok(self.file_type)
     }
 }
 
@@ -436,8 +438,15 @@ impl DirBuilder {
 pub fn readdir(path: &Path) -> io::Result<ReadDir> {
     let mut opts = OpenOptions::new();
     opts.read(true);
-    let file = File::open(path, &opts)?;
-    Ok(ReadDir { file, root: path.to_path_buf() })
+    // Preserve the caller's path for DirEntry::path(), but do not resolve
+    // metadata relative to a potentially different working directory later.
+    // An empty path must still fail instead of becoming the current directory.
+    if path.as_os_str().is_empty() {
+        return Err(io::ErrorKind::NotFound.into());
+    }
+    let metadata_root = canonicalize(path)?;
+    let file = File::open(&metadata_root, &opts)?;
+    Ok(ReadDir { file, root: path.to_path_buf(), metadata_root })
 }
 
 pub fn unlink(path: &Path) -> io::Result<()> {
@@ -465,8 +474,8 @@ pub fn set_times(_path: &Path, _times: FileTimes) -> io::Result<()> {
 }
 
 pub fn set_times_nofollow(_path: &Path, _times: FileTimes) -> io::Result<()> {
-    // TODO(scarlet): add no-follow timestamp mutation once VFS has lstat-style
-    // path resolution and timestamp setters.
+    // TODO(scarlet): add a no-follow timestamp mutation syscall once filesystems
+    // expose timestamp setters.
     unsupported()
 }
 
@@ -536,7 +545,11 @@ pub fn stat(path: &Path) -> io::Result<FileAttr> {
 }
 
 pub fn lstat(path: &Path) -> io::Result<FileAttr> {
-    stat(path)
+    let path = path_to_cstring(path)?;
+    let mut metadata = abi::RawFileMetadata::default();
+    abi::vfs_symlink_metadata(path.as_ptr().cast(), &mut metadata)
+        .map_err(|()| io::ErrorKind::Other)?;
+    FileAttr::from_raw(metadata)
 }
 
 pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
@@ -642,7 +655,7 @@ impl RawDirEntry {
         Ok(entry)
     }
 
-    fn into_dir_entry(self, root: &Path) -> DirEntry {
+    fn into_dir_entry(self, root: &Path, metadata_root: &Path) -> DirEntry {
         let name = str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("");
         let file_name = OsString::from(name);
         let is_dir = self.file_type == 1;
@@ -651,15 +664,9 @@ impl RawDirEntry {
 
         DirEntry {
             path: root.join(&file_name),
+            metadata_path: metadata_root.join(&file_name),
             file_name,
-            attr: FileAttr {
-                size: self.size,
-                file_type: FileType { is_dir, is_file, is_symlink },
-                perm: FilePermissions { readonly: false },
-                created: UNIX_EPOCH,
-                modified: UNIX_EPOCH,
-                accessed: UNIX_EPOCH,
-            },
+            file_type: FileType { is_dir, is_file, is_symlink },
         }
     }
 }
@@ -695,5 +702,64 @@ impl fmt::Debug for RawDirEntry {
             .field("file_type", &self.file_type)
             .field("name_len", &self.name_len)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fs;
+    use crate::test_helpers::tmpdir;
+
+    #[test]
+    fn dir_entry_metadata_uses_current_file_metadata() {
+        let dir = tmpdir();
+        let path = dir.join("file");
+        fs::write(&path, b"old").unwrap();
+        let entry = fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap();
+        fs::write(&path, b"updated contents").unwrap();
+
+        let expected = fs::metadata(&path).unwrap();
+        let actual = entry.metadata().unwrap();
+        assert_eq!(actual.len(), b"updated contents".len() as u64);
+        assert_eq!(actual.file_type(), expected.file_type());
+        assert_eq!(actual.permissions(), expected.permissions());
+        assert_eq!(actual.modified().unwrap(), expected.modified().unwrap());
+        assert_eq!(actual.accessed().unwrap(), expected.accessed().unwrap());
+        assert_eq!(actual.created().unwrap(), expected.created().unwrap());
+
+        fs::remove_file(&path).unwrap();
+        assert!(entry.metadata().is_err());
+        assert!(entry.file_type().unwrap().is_file());
+    }
+
+    #[test]
+    fn dir_entry_metadata_preserves_dangling_symlinks() {
+        let dir = tmpdir();
+        let path = dir.join("link");
+        symlink(Path::new("missing"), &path).unwrap();
+        let entry = fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap();
+        let metadata = entry.metadata().unwrap();
+        assert!(entry.file_type().unwrap().is_symlink());
+        assert!(metadata.is_symlink());
+        assert_eq!(metadata.len(), fs::symlink_metadata(&path).unwrap().len());
+        assert!(fs::metadata(&path).is_err());
+    }
+
+    #[test]
+    fn dir_entry_keeps_display_path_separate_from_metadata_path() {
+        let mut raw = RawDirEntry {
+            file_id: 1,
+            size: 0,
+            file_type: 1,
+            name_len: 5,
+            _reserved: [0; 6],
+            name: [0; 256],
+        };
+        raw.name[..5].copy_from_slice(b"child");
+        let entry = raw.into_dir_entry(Path::new("relative"), Path::new("/root/relative"));
+        assert_eq!(entry.path(), Path::new("relative/child"));
+        assert_eq!(entry.metadata_path, Path::new("/root/relative/child"));
+        assert!(entry.file_type().unwrap().is_dir());
     }
 }
