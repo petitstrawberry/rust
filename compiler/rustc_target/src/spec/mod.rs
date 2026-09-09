@@ -1668,6 +1668,7 @@ supported_targets! {
     ("aarch64-unknown-trusty", aarch64_unknown_trusty),
     ("x86_64-unknown-trusty", x86_64_unknown_trusty),
 
+    ("riscv32gc-unknown-scarlet", riscv32gc_unknown_scarlet),
     ("riscv32i-unknown-none-elf", riscv32i_unknown_none_elf),
     ("riscv32im-risc0-zkvm-elf", riscv32im_risc0_zkvm_elf),
     ("riscv32im-unknown-none-elf", riscv32im_unknown_none_elf),
@@ -1690,6 +1691,7 @@ supported_targets! {
     ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
     ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
     ("riscv64gc-unknown-scarlet", riscv64gc_unknown_scarlet),
+    ("riscv64a23-unknown-scarlet", riscv64a23_unknown_scarlet),
     ("riscv64gc-unknown-linux-gnu", riscv64gc_unknown_linux_gnu),
     ("riscv64gc-unknown-linux-musl", riscv64gc_unknown_linux_musl),
     ("riscv64a23-unknown-linux-gnu", riscv64a23_unknown_linux_gnu),

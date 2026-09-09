@@ -21,9 +21,24 @@ pub use scarlet_abi::{
 #[cfg(target_arch = "aarch64")]
 #[path = "arch/aarch64.rs"]
 mod arch;
-#[cfg(target_arch = "riscv64")]
-#[path = "arch/riscv64.rs"]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+#[path = "arch/riscv.rs"]
 mod arch;
+
+pub use scarlet_abi::native_scalar;
+
+/// Invoke a wide-result syscall with up to six Native argument words.
+/// RV32 returns the low/high halves in a0/a1; 64-bit targets return one word.
+pub fn syscall_u64(syscall: Syscall, args: [usize; 6]) -> u64 {
+    #[cfg(target_pointer_width = "64")]
+    {
+        arch::syscall6(syscall, args[0], args[1], args[2], args[3], args[4], args[5]) as u64
+    }
+    #[cfg(target_arch = "riscv32")]
+    {
+        arch::syscall_u64(syscall, args)
+    }
+}
 
 /// Invoke a Scarlet Native syscall with no arguments.
 pub fn syscall0(syscall: Syscall) -> usize {

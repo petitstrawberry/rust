@@ -1,6 +1,6 @@
 //! Scarlet Native ABI syscall bindings used by the Scarlet `std` PAL.
 
-use scarlet_sys::Syscall;
+use scarlet_sys::{Syscall, native_scalar};
 pub(crate) use scarlet_sys::{
     ERRNO_EAGAIN, ERRNO_EINTR, FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR,
     FILE_TYPE_SYMLINK, RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
@@ -53,6 +53,11 @@ pub mod clone_flags {
 #[inline]
 fn syscall_result(ret: usize) -> Result<usize, ()> {
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(ret) }
+}
+
+#[inline]
+fn syscall_u64_result(ret: u64) -> Result<u64, ()> {
+    if ret == u64::MAX { Err(()) } else { Ok(ret) }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,18 +158,21 @@ pub fn getpid() -> Result<u32, ()> {
 
 #[inline]
 pub fn sleep(nanoseconds: u64) -> Result<(), ()> {
-    let ret = scarlet_sys::syscall1(Syscall::Sleep, nanoseconds as usize);
+    let words = native_scalar::u64_to_words(nanoseconds);
+    let mut args = [0; 2];
+    args[..words.len()].copy_from_slice(&words);
+    let ret = scarlet_sys::syscall2(Syscall::Sleep, args[0], args[1]);
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }
 
 #[inline]
 pub fn monotonic_time_ns() -> Result<u64, ()> {
-    syscall_result(scarlet_sys::syscall0(Syscall::MonotonicTime)).map(|ns| ns as u64)
+    syscall_u64_result(scarlet_sys::syscall_u64(Syscall::MonotonicTime, [0; 6]))
 }
 
 #[inline]
 pub fn system_time_ns() -> Result<u64, ()> {
-    syscall_result(scarlet_sys::syscall0(Syscall::SystemTime)).map(|ns| ns as u64)
+    syscall_u64_result(scarlet_sys::syscall_u64(Syscall::SystemTime, [0; 6]))
 }
 
 #[inline]
@@ -322,13 +330,20 @@ pub fn sbrk(size: usize) -> Result<usize, ()> {
 
 #[inline]
 pub fn file_seek(handle: usize, offset: i64, whence: usize) -> Result<u64, ()> {
-    syscall_result(scarlet_sys::syscall3(Syscall::FileSeek, handle, offset as usize, whence))
-        .map(|position| position as u64)
+    let words = native_scalar::u64_to_words(offset as u64);
+    let mut args = [0; 6];
+    args[0] = handle;
+    args[1..1 + words.len()].copy_from_slice(&words);
+    args[1 + words.len()] = whence;
+    syscall_u64_result(scarlet_sys::syscall_u64(Syscall::FileSeek, args))
 }
 
 #[inline]
 pub fn file_truncate(handle: usize, length: u64) -> Result<(), ()> {
-    let ret = scarlet_sys::syscall2(Syscall::FileTruncate, handle, length as usize);
+    let words = native_scalar::u64_to_words(length);
+    let mut args = [0; 2];
+    args[..words.len()].copy_from_slice(&words);
+    let ret = scarlet_sys::syscall3(Syscall::FileTruncate, handle, args[0], args[1]);
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }
 

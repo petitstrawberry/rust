@@ -6,6 +6,8 @@
 
 #![no_std]
 
+pub mod native_scalar;
+
 /// Raw kernel object handle value used at the Scarlet Native ABI boundary.
 pub type RawHandle = i32;
 

@@ -123,7 +123,7 @@ fn arch_tls_pointer() -> usize {
     tpidr_el0
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[inline]
 fn arch_tls_pointer() -> usize {
     let tp;

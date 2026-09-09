@@ -10,14 +10,14 @@ const PAGE_SIZE: usize = 4096;
 const STACK_ALIGN: usize = 16;
 const TLS_MAPPING_SIZE: usize = PAGE_SIZE;
 const TLS_CLEANUP_OFFSET: usize = 2048;
-const THREAD_CLEANUP_MAGIC: usize = 0x5343_5448_5244_0001;
+const THREAD_CLEANUP_MAGIC: u64 = 0x5343_5448_5244_0001;
 
 pub const DEFAULT_MIN_STACK_SIZE: usize = 64 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ThreadCleanupRecord {
-    magic: usize,
+    magic: u64,
     stack_mapping_base: usize,
     stack_mapping_len: usize,
     tls_mapping_base: usize,
@@ -127,7 +127,7 @@ pub fn set_name(_name: &CStr) {
 }
 
 pub fn sleep(dur: Duration) {
-    let nanos = dur.as_nanos().min(usize::MAX as u128) as u64;
+    let nanos = dur.as_nanos().min(u64::MAX as u128) as u64;
     let _ = abi::sleep(nanos);
 }
 
@@ -270,7 +270,7 @@ fn arch_tls_pointer() -> usize {
     tpidr_el0
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[inline]
 fn arch_tls_pointer() -> usize {
     let tp;
