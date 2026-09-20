@@ -1,5 +1,32 @@
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 use crate::ffi::c_char;
 use crate::io as std_io;
+
+// The kernel keeps the initial stack mapped for the life of the process.
+// Publish auxv before calling constructors, which may detect CPU features.
+// A custom entry point that skips `_start` keeps the outline helper's safe
+// LL/SC default unless it performs equivalent auxv and constructor setup.
+static AUXV: AtomicPtr<usize> = AtomicPtr::new(core::ptr::null_mut());
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __scarlet_getauxval(key: usize) -> usize {
+    let mut entry = AUXV.load(Ordering::Acquire);
+    if entry.is_null() {
+        return 0;
+    }
+    // SAFETY: The kernel places a terminated array of native-word pairs after
+    // envp on the persistent initial process stack.
+    unsafe {
+        while *entry != 0 {
+            if *entry == key {
+                return *entry.add(1);
+            }
+            entry = entry.add(2);
+        }
+    }
+    0
+}
 
 // SAFETY: must be called only once during runtime initialization.
 // NOTE: this is not guaranteed to run, for example when Rust code is called externally.
@@ -61,7 +88,25 @@ pub extern "C" fn _start(argc: isize, argv: *const *const c_char) -> ! {
     }
 
     let envp = envp_from_argv(argc, argv);
+    if !envp.is_null() {
+        // SAFETY: Scarlet's process ABI puts auxv immediately after the
+        // null-terminated envp array on the initial stack.
+        unsafe {
+            let mut end = envp;
+            while !(*end).is_null() {
+                end = end.add(1);
+            }
+            AUXV.store(end.add(1).cast_mut().cast(), Ordering::Release);
+        }
+    }
     crate::sys::env::init(envp);
+
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: The ELF linker defines these bounds and the entries are C ABI
+    // constructors. They run after auxv is available and before user main.
+    unsafe {
+        run_init_array()
+    };
 
     // SAFETY: rustc emits `main` as the C ABI entry shim for normal Rust
     // executables. It calls `std::rt::lang_start`, which runs `sys::init`.
@@ -78,6 +123,22 @@ pub extern "C" fn _start(argc: isize, argv: *const *const c_char) -> ! {
     #[cfg(not(target_os = "scarlet"))]
     crate::rt::thread_cleanup();
     crate::sys::pal::os::exit(code);
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn run_init_array() {
+    unsafe extern "C" {
+        static __init_array_start: extern "C" fn();
+        static __init_array_end: extern "C" fn();
+    }
+    let mut entry = &raw const __init_array_start;
+    let end = &raw const __init_array_end;
+    while entry < end {
+        // SAFETY: The linker bounds cover an array of function pointers.
+        unsafe { (*entry)() };
+        // SAFETY: The next pointer remains within or one past the array.
+        entry = unsafe { entry.add(1) };
+    }
 }
 
 fn envp_from_argv(argc: isize, argv: *const *const c_char) -> *const *const c_char {

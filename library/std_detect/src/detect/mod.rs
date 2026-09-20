@@ -77,6 +77,10 @@ cfg_select! {
         #[path = "os/darwin/aarch64.rs"]
         mod os;
     }
+    all(target_os = "scarlet", target_arch = "aarch64") => {
+        #[path = "os/scarlet/aarch64.rs"]
+        mod os;
+    }
     _ => {
         #[path = "os/other.rs"]
         mod os;
