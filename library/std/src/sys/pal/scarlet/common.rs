@@ -5,7 +5,7 @@ use crate::io as std_io;
 
 // The kernel keeps the initial stack mapped for the life of the process.
 // Publish auxv before calling constructors, which may detect CPU features.
-// A custom entry point that skips `_start` keeps the outline helper's safe
+// A custom entry point that skips `__scarlet_start` keeps the outline helper's safe
 // LL/SC default unless it performs equivalent auxv and constructor setup.
 static AUXV: AtomicPtr<usize> = AtomicPtr::new(core::ptr::null_mut());
 
@@ -55,7 +55,19 @@ pub fn is_interrupted(code: i32) -> bool {
 }
 
 pub fn decode_error_kind(code: i32) -> crate::io::ErrorKind {
+    use scarlet_sys::fs::*;
     match code {
+        ERRNO_ENOENT => crate::io::ErrorKind::NotFound,
+        ERRNO_EACCES => crate::io::ErrorKind::PermissionDenied,
+        ERRNO_EEXIST => crate::io::ErrorKind::AlreadyExists,
+        ERRNO_ENOTDIR => crate::io::ErrorKind::NotADirectory,
+        ERRNO_EISDIR => crate::io::ErrorKind::IsADirectory,
+        ERRNO_ENOSPC => crate::io::ErrorKind::StorageFull,
+        ERRNO_EROFS => crate::io::ErrorKind::ReadOnlyFilesystem,
+        ERRNO_ENAMETOOLONG => crate::io::ErrorKind::InvalidFilename,
+        ERRNO_ENOTEMPTY => crate::io::ErrorKind::DirectoryNotEmpty,
+        ERRNO_ELOOP => crate::io::ErrorKind::FilesystemLoop,
+        ERRNO_EOVERFLOW => crate::io::ErrorKind::FileTooLarge,
         scarlet_sys::ERRNO_EINTR => crate::io::ErrorKind::Interrupted,
         scarlet_sys::ERRNO_EIO => crate::io::ErrorKind::Other,
         scarlet_sys::ERRNO_EAGAIN => crate::io::ErrorKind::WouldBlock,
@@ -80,36 +92,40 @@ pub fn abort_internal() -> ! {
     core::intrinsics::abort();
 }
 
+// Only the executable's CRT references `main` and linker-defined constructor
+// boundaries. Keeping those references out of std lets a Rust dylib embed std
+// without acquiring an entry point or unresolved executable-only symbols.
+//
+// SAFETY: The executable CRT passes the persistent kernel argc/argv/envp/auxv
+// arrays, its C ABI main shim and the linker-defined constructor range. This
+// function is entered once, before any application code runs.
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(argc: isize, argv: *const *const c_char) -> ! {
-    unsafe extern "C" {
-        fn main(argc: i32, argv: *const *const c_char) -> i32;
-    }
-
-    let envp = envp_from_argv(argc, argv);
-    if !envp.is_null() {
-        // SAFETY: Scarlet's process ABI puts auxv immediately after the
-        // null-terminated envp array on the initial stack.
-        unsafe {
-            let mut end = envp;
-            while !(*end).is_null() {
-                end = end.add(1);
-            }
-            AUXV.store(end.add(1).cast_mut().cast(), Ordering::Release);
-        }
-    }
+pub unsafe extern "C" fn __scarlet_start(
+    argc: isize,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+    auxv: *const usize,
+    main: unsafe extern "C" fn(i32, *const *const c_char) -> i32,
+    init_array_start: *const unsafe extern "C" fn(),
+    init_array_end: *const unsafe extern "C" fn(),
+) -> ! {
+    crate::sys::thread_local::key::ensure_native_tls();
+    AUXV.store(auxv.cast_mut(), Ordering::Release);
     crate::sys::env::init(envp);
 
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: The ELF linker defines these bounds and the entries are C ABI
-    // constructors. They run after auxv is available and before user main.
-    unsafe {
-        run_init_array()
-    };
+    // The loader initializes dependency DSOs. Main-image constructors remain
+    // the executable CRT's responsibility on both Scarlet architectures.
+    let mut entry = init_array_start;
+    while entry < init_array_end {
+        // SAFETY: The CRT supplies the executable's array of C constructors.
+        unsafe { (*entry)() };
+        // SAFETY: The next pointer stays within or one past the constructor array.
+        entry = unsafe { entry.add(1) };
+    }
 
-    // SAFETY: rustc emits `main` as the C ABI entry shim for normal Rust
-    // executables. It calls `std::rt::lang_start`, which runs `sys::init`.
+    // SAFETY: rustc's executable main shim calls std::rt::lang_start, which
+    // initializes process arguments through sys::init before calling user main.
     let code = unsafe { main(argc as i32, argv) };
     #[cfg(target_os = "scarlet")]
     unsafe {
@@ -125,28 +141,28 @@ pub extern "C" fn _start(argc: isize, argv: *const *const c_char) -> ! {
     crate::sys::pal::os::exit(code);
 }
 
-#[cfg(target_arch = "aarch64")]
-unsafe fn run_init_array() {
+// RV32 remains static-only and retains its existing Rust entry. The separate
+// executable CRT is enabled only for the native 64-bit targets.
+#[cfg(all(not(test), target_pointer_width = "32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start(argc: isize, argv: *const *const c_char) -> ! {
     unsafe extern "C" {
-        static __init_array_start: extern "C" fn();
-        static __init_array_end: extern "C" fn();
+        fn main(argc: i32, argv: *const *const c_char) -> i32;
     }
-    let mut entry = &raw const __init_array_start;
-    let end = &raw const __init_array_end;
-    while entry < end {
-        // SAFETY: The linker bounds cover an array of function pointers.
-        unsafe { (*entry)() };
-        // SAFETY: The next pointer remains within or one past the array.
-        entry = unsafe { entry.add(1) };
-    }
-}
-
-fn envp_from_argv(argc: isize, argv: *const *const c_char) -> *const *const c_char {
-    if argc < 0 || argv.is_null() {
-        return crate::ptr::null();
-    }
-
-    // SAFETY: The Scarlet process ABI passes a null-terminated argv array,
-    // immediately followed by a null-terminated envp array.
-    unsafe { argv.add(argc as usize + 1) }
+    let (envp, auxv) = if argc < 0 || argv.is_null() {
+        (crate::ptr::null(), crate::ptr::null())
+    } else {
+        // SAFETY: Scarlet places envp after argv, then auxv after envp's NULL.
+        unsafe {
+            let envp = argv.add(argc as usize + 1);
+            let mut end = envp;
+            while !(*end).is_null() {
+                end = end.add(1);
+            }
+            (envp, end.add(1).cast())
+        }
+    };
+    // SAFETY: Forward the kernel arrays and rustc's main shim. RV32 previously
+    // did not run an init array, so its empty constructor range stays unchanged.
+    unsafe { __scarlet_start(argc, argv, envp, auxv, main, crate::ptr::null(), crate::ptr::null()) }
 }

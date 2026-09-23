@@ -58,7 +58,10 @@ pub struct OpenOptions {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct FileTimes {}
+pub struct FileTimes {
+    accessed: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FilePermissions {
@@ -123,8 +126,31 @@ impl FilePermissions {
 }
 
 impl FileTimes {
-    pub fn set_accessed(&mut self, _t: SystemTime) {}
-    pub fn set_modified(&mut self, _t: SystemTime) {}
+    pub fn set_accessed(&mut self, t: SystemTime) {
+        self.accessed = Some(t);
+    }
+    pub fn set_modified(&mut self, t: SystemTime) {
+        self.modified = Some(t);
+    }
+
+    fn into_raw(self) -> io::Result<abi::filesystem::RawFileTimes> {
+        use abi::filesystem::*;
+        let seconds = |time: SystemTime| {
+            time.sub_time(&UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+        };
+        let mut raw = RawFileTimes { version: FILE_TIMES_VERSION, ..RawFileTimes::default() };
+        if let Some(time) = self.accessed {
+            raw.accessed = seconds(time)?;
+            raw.flags |= FILE_TIMES_ACCESSED;
+        }
+        if let Some(time) = self.modified {
+            raw.modified = seconds(time)?;
+            raw.flags |= FILE_TIMES_MODIFIED;
+        }
+        Ok(raw)
+    }
 }
 
 impl FileType {
@@ -268,11 +294,11 @@ impl File {
     }
 
     pub fn fsync(&self) -> io::Result<()> {
-        Ok(())
+        abi::file_sync(self.handle)
     }
 
     pub fn datasync(&self) -> io::Result<()> {
-        Ok(())
+        self.fsync()
     }
 
     pub fn lock(&self) -> io::Result<()> {
@@ -371,10 +397,8 @@ impl File {
         unsupported()
     }
 
-    pub fn set_times(&self, _times: FileTimes) -> io::Result<()> {
-        // TODO(scarlet): add Native FileObject timestamp mutation once VFS
-        // filesystems expose timestamp setters.
-        unsupported()
+    pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+        abi::file_set_times(self.handle, &times.into_raw()?)
     }
 }
 
@@ -431,7 +455,7 @@ impl DirBuilder {
 
     pub fn mkdir(&self, path: &Path) -> io::Result<()> {
         let path = path_to_cstring(path)?;
-        abi::vfs_create_directory(path.as_ptr().cast()).map_err(|()| io::ErrorKind::Other.into())
+        abi::vfs_create_directory(path.as_ptr().cast())
     }
 }
 
@@ -467,16 +491,14 @@ pub fn set_perm(_path: &Path, _perm: FilePermissions) -> io::Result<()> {
     unsupported()
 }
 
-pub fn set_times(_path: &Path, _times: FileTimes) -> io::Result<()> {
-    // TODO(scarlet): add a VFS timestamp mutation syscall once filesystems
-    // expose timestamp setters.
-    unsupported()
+pub fn set_times(path: &Path, times: FileTimes) -> io::Result<()> {
+    let path = path_to_cstring(path)?;
+    abi::vfs_set_times(path.as_ptr().cast(), &times.into_raw()?, false)
 }
 
-pub fn set_times_nofollow(_path: &Path, _times: FileTimes) -> io::Result<()> {
-    // TODO(scarlet): add a no-follow timestamp mutation syscall once filesystems
-    // expose timestamp setters.
-    unsupported()
+pub fn set_times_nofollow(path: &Path, times: FileTimes) -> io::Result<()> {
+    let path = path_to_cstring(path)?;
+    abi::vfs_set_times(path.as_ptr().cast(), &times.into_raw()?, true)
 }
 
 pub fn rmdir(path: &Path) -> io::Result<()> {
@@ -510,7 +532,8 @@ pub fn exists(path: &Path) -> io::Result<bool> {
     let mut metadata = abi::RawFileMetadata::default();
     match abi::vfs_metadata(path.as_ptr().cast(), &mut metadata) {
         Ok(()) => Ok(true),
-        Err(()) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -540,20 +563,23 @@ pub fn link(src: &Path, dst: &Path) -> io::Result<()> {
 pub fn stat(path: &Path) -> io::Result<FileAttr> {
     let path = path_to_cstring(path)?;
     let mut metadata = abi::RawFileMetadata::default();
-    abi::vfs_metadata(path.as_ptr().cast(), &mut metadata).map_err(|()| io::ErrorKind::Other)?;
+    abi::vfs_metadata(path.as_ptr().cast(), &mut metadata)?;
     FileAttr::from_raw(metadata)
 }
 
 pub fn lstat(path: &Path) -> io::Result<FileAttr> {
     let path = path_to_cstring(path)?;
     let mut metadata = abi::RawFileMetadata::default();
-    abi::vfs_symlink_metadata(path.as_ptr().cast(), &mut metadata)
-        .map_err(|()| io::ErrorKind::Other)?;
+    abi::vfs_symlink_metadata(path.as_ptr().cast(), &mut metadata)?;
     FileAttr::from_raw(metadata)
 }
 
 pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
-    Ok(if path.is_absolute() { path.to_path_buf() } else { crate::env::current_dir()?.join(path) })
+    let path = path_to_cstring(path)?;
+    let mut buffer = [0; abi::filesystem::PATH_MAX];
+    let len = abi::vfs_canonicalize(path.as_ptr().cast(), &mut buffer)?;
+    let path = str::from_utf8(&buffer[..len]).map_err(|_| io::ErrorKind::InvalidData)?;
+    Ok(PathBuf::from(path))
 }
 
 pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
@@ -617,13 +643,12 @@ fn path_to_cstring(path: &Path) -> io::Result<CString> {
 }
 
 fn open_error(path: &CString) -> io::Error {
-    // The Native VFS ABI currently reports only success or failure, so probe
-    // metadata to distinguish a missing path from other open failures.
+    // Legacy VfsOpen still reports only success or failure. The newer metadata
+    // operation preserves pathname errors; other open failures remain generic.
     let mut metadata = abi::RawFileMetadata::default();
-    if abi::vfs_metadata(path.as_ptr().cast(), &mut metadata).is_err() {
-        io::ErrorKind::NotFound.into()
-    } else {
-        io::ErrorKind::Other.into()
+    match abi::vfs_metadata(path.as_ptr().cast(), &mut metadata) {
+        Err(error) => error,
+        Ok(()) => io::ErrorKind::Other.into(),
     }
 }
 

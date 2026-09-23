@@ -199,7 +199,10 @@ pub(crate) mod key {
             mod racy;
             mod scarlet;
             pub(super) use racy::LazyKey;
-            pub(crate) use scarlet::run_dtors;
+            pub(crate) use scarlet::{
+                TLS_CLEANUP_OFFSET, TLS_MAPPING_SIZE, ensure_native_tls, native_errno_location,
+                run_dtors,
+            };
             pub(super) use scarlet::{Key, get, set};
             use scarlet::{create, destroy};
         }

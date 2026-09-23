@@ -251,7 +251,14 @@ fn placement(
         return None;
     }
 
-    Some((data_addr, alloc_end - block_start))
+    // A split tail becomes a Block, whose fields require natural alignment.
+    // The payload may fit even when rounding its end would pass the block end
+    // (or overflow usize). Consume the whole block in that case; the caller
+    // will not split an empty tail.
+    let used_end = align_up(alloc_end, align_of::<Block>())
+        .filter(|end| *end <= block_end)
+        .unwrap_or(block_end);
+    Some((data_addr, used_end - block_start))
 }
 
 fn align_up(value: usize, align: usize) -> Option<usize> {

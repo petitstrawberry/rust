@@ -915,15 +915,49 @@ impl Step for StartupObjects {
         });
     }
 
-    /// Builds and prepare startup objects like rsbegin.o and rsend.o
+    /// Builds and prepares startup objects without depending on built std.
     ///
-    /// These are primarily used on Windows right now for linking executables/dlls.
-    /// They don't require any library support as they're just plain old object
-    /// files, so we just use the nightly snapshot compiler to always build them (as
-    /// no other compilers are guaranteed to be available).
+    /// Scarlet's executable CRT is assembled by the configured target C compiler.
+    /// Windows rsbegin.o and rsend.o use the nightly snapshot Rust compiler, as no
+    /// other Rust compilers are guaranteed to be available.
     fn run(self, builder: &Builder<'_>) -> Vec<(PathBuf, DependencyType)> {
         let for_compiler = self.compiler;
         let target = self.target;
+        // Scarlet's executable entry is assembly, so this step does not need
+        // stage0 to recognize the custom Rust target or depend on built std.
+        if target.contains("scarlet")
+            && (target.starts_with("aarch64-") || target.starts_with("riscv64"))
+        {
+            let (source, clang_target, arch_flags): (&str, &str, &[&str]) =
+                if target.starts_with("aarch64-") {
+                    ("scarlet-aarch64.S", "aarch64-unknown-none", &[])
+                } else {
+                    // The base ISA entry also serves RV64 profile targets.
+                    ("scarlet-riscv64.S", "riscv64-unknown-none", &["-march=rv64gc", "-mabi=lp64d"])
+                };
+            let src_file = builder.src.join("library/rtstartup").join(source);
+            let dst_dir = builder.native_dir(target).join("rtstartup");
+            let dst_file = dst_dir.join("scarlet-crt0.o");
+            t!(fs::create_dir_all(&dst_dir));
+            let cc = builder.cc_tool(target);
+            let mut cmd = command(cc.path());
+            cmd.args(cc.args());
+            for (key, value) in cc.env() {
+                cmd.env(key, value);
+            }
+            if cc.is_like_clang() {
+                // Bare ELF triples also work with stock clangs that do not
+                // know Scarlet. Appending overrides any cc-rs target default.
+                cmd.arg(format!("--target={clang_target}"));
+            }
+            // Always rebuild this tiny object: compiler/flag changes must not
+            // leave a stale object just because the assembly mtime is unchanged.
+            cmd.args(arch_flags).arg("-c").arg(&src_file).arg("-o").arg(&dst_file).run(builder);
+            let obj = builder.sysroot_target_libdir(for_compiler, target).join("scarlet-crt0.o");
+            builder.copy_link(&dst_file, &obj, FileType::NativeLibrary);
+            return vec![(obj, DependencyType::Target)];
+        }
+
         // Even though no longer necessary on x86_64, they are kept for now to
         // avoid potential issues in downstream crates.
         if !target.is_windows_gnu() {

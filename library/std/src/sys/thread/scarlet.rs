@@ -2,14 +2,14 @@ use crate::ffi::CStr;
 use crate::mem::ManuallyDrop;
 use crate::num::NonZero;
 use crate::sys::pal::abi;
+use crate::sys::thread_local::key::{TLS_CLEANUP_OFFSET, TLS_MAPPING_SIZE};
 use crate::thread::ThreadInit;
 use crate::time::Duration;
 use crate::{cmp, io, ptr};
+use scarlet_sys::tls::NativeTlsHeader;
 
 const PAGE_SIZE: usize = 4096;
 const STACK_ALIGN: usize = 16;
-const TLS_MAPPING_SIZE: usize = PAGE_SIZE;
-const TLS_CLEANUP_OFFSET: usize = 2048;
 const THREAD_CLEANUP_MAGIC: u64 = 0x5343_5448_5244_0001;
 
 pub const DEFAULT_MIN_STACK_SIZE: usize = 64 * 1024;
@@ -23,6 +23,11 @@ struct ThreadCleanupRecord {
     tls_mapping_base: usize,
     tls_mapping_len: usize,
 }
+
+const _: () = assert!(
+    TLS_CLEANUP_OFFSET + crate::mem::size_of::<ThreadCleanupRecord>() <= TLS_MAPPING_SIZE,
+    "Scarlet thread cleanup record overlaps its TLS key table",
+);
 
 struct ThreadStart {
     init: Box<ThreadInit>,
@@ -162,7 +167,7 @@ fn allocate_thread_stack(stack_size: usize) -> io::Result<ThreadStackMapping> {
 }
 
 fn allocate_thread_tls() -> io::Result<usize> {
-    abi::memory_map(
+    let base = abi::memory_map(
         0,
         0,
         TLS_MAPPING_SIZE,
@@ -170,7 +175,17 @@ fn allocate_thread_tls() -> io::Result<usize> {
         abi::mmap::MAP_PRIVATE | abi::mmap::MAP_ANONYMOUS,
         0,
     )
-    .map_err(|()| io::ErrorKind::Other.into())
+    .map_err(|()| io::ErrorKind::Other)?;
+    if base == 0 {
+        return Err(io::ErrorKind::Other.into());
+    }
+    // SAFETY: initialize the new thread's shared header before clone can
+    // publish its TLS pointer or run any code on the child thread.
+    unsafe {
+        ptr::with_exposed_provenance_mut::<NativeTlsHeader>(base)
+            .write(NativeTlsHeader::INITIAL);
+    }
+    Ok(base)
 }
 
 fn cleanup_thread_mappings(
@@ -264,7 +279,7 @@ fn arch_tls_pointer() -> usize {
         core::arch::asm!(
             "mrs {}, tpidr_el0",
             out(reg) tpidr_el0,
-            options(nostack, pure, readonly)
+            options(nostack, readonly)
         );
     }
     tpidr_el0
@@ -279,7 +294,7 @@ fn arch_tls_pointer() -> usize {
         core::arch::asm!(
             "mv {}, tp",
             out(reg) tp,
-            options(nostack, pure, readonly)
+            options(nostack, readonly)
         );
     }
     tp

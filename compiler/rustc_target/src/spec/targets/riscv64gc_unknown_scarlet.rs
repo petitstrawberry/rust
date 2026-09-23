@@ -18,8 +18,13 @@ pub(crate) fn target() -> Target {
 
         options: TargetOptions {
             os: Os::Scarlet,
+            pre_link_objects: crate::spec::crt_objects::pre_scarlet(),
             linker_flavor: LinkerFlavor::Gnu(Cc::No, Lld::Yes),
             linker: Some("rust-lld".into()),
+            pre_link_args: TargetOptions::link_args(
+                LinkerFlavor::Gnu(Cc::No, Lld::No),
+                &["--dynamic-linker=/bin/scarlet-ld"],
+            ),
             llvm_abiname: "lp64d".into(),
             cpu: "generic-rv64".into(),
             max_atomic_width: Some(64),
@@ -29,7 +34,10 @@ pub(crate) fn target() -> Target {
             // Scarlet does not currently populate ELF native TLS blocks for
             // each thread. std uses its OS-level TLS backend instead.
             has_thread_local: false,
-            relocation_model: RelocModel::Static,
+            relocation_model: RelocModel::Pic,
+            dynamic_linking: true,
+            position_independent_executables: true,
+            crt_static_respected: true,
             code_model: Some(CodeModel::Medium),
             emit_debug_gdb_scripts: false,
             eh_frame_header: false,

@@ -6,7 +6,9 @@
 
 #![no_std]
 
+pub mod fs;
 pub mod native_scalar;
+pub mod tls;
 
 /// Raw kernel object handle value used at the Scarlet Native ABI boundary.
 pub type RawHandle = i32;
@@ -185,6 +187,8 @@ pub enum Syscall {
     FileSeek = 300,
     FileTruncate = 301,
     FileMetadata = 302,
+    FileSetTimes = 303,
+    FileSync = 304,
 
     // VFS operations
     VfsOpen = 400,
@@ -201,6 +205,10 @@ pub enum Syscall {
     VfsCreateHardlink = 411,
     /// Query path metadata without following the final symbolic link.
     VfsSymlinkMetadata = 412,
+    VfsCanonicalize = 413,
+    VfsSetTimes = 414,
+    VfsMetadataWithStatus = 415,
+    VfsCreateDirectoryWithStatus = 416,
 
     // Filesystem operations
     FsMount = 500,

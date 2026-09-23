@@ -1,5 +1,5 @@
 use super::unsupported;
-use crate::ffi::{CString, OsStr, OsString};
+use crate::ffi::{CStr, CString, OsStr, OsString, c_char};
 use crate::path::{self, PathBuf};
 use crate::sys::pal::abi;
 use crate::{fmt, io, iter, slice, str};
@@ -7,7 +7,9 @@ use crate::{fmt, io, iter, slice, str};
 const PATH_SEPARATOR: u8 = b':';
 
 pub fn errno() -> i32 {
-    0
+    // SAFETY: the matching Scarlet CRT initialized this thread's shared errno
+    // slot before user code; the accessor rejects absent or incompatible TLS.
+    unsafe { crate::sys::thread_local::key::native_errno_location().read() }
 }
 
 pub fn error_string(_errno: i32) -> String {
@@ -82,9 +84,20 @@ impl fmt::Display for JoinPathsError {
 impl crate::error::Error for JoinPathsError {}
 
 pub fn current_exe() -> io::Result<PathBuf> {
-    // TODO(scarlet): expose the executed image path through the Native task ABI.
-    // argv[0] is not reliable enough for std::env::current_exe.
-    unsupported()
+    const AT_EXECFN: usize = 31;
+    let pointer = crate::ptr::with_exposed_provenance::<c_char>(super::__scarlet_getauxval(AT_EXECFN));
+    if pointer.is_null() {
+        return unsupported();
+    }
+    // SAFETY: Scarlet supplies a NUL-terminated pathname in the persistent
+    // initial stack. The kernel includes it only after resolving the executable
+    // to the same filesystem/inode in this task's filesystem view.
+    let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+    let path = str::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidData)?;
+    if !path.starts_with('/') {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(PathBuf::from(path))
 }
 
 pub fn temp_dir() -> PathBuf {

@@ -1,12 +1,12 @@
 //! Scarlet Native ABI syscall bindings used by the Scarlet `std` PAL.
 
-use scarlet_sys::{Syscall, native_scalar};
 pub(crate) use scarlet_sys::{
     ERRNO_EAGAIN, ERRNO_EINTR, FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR,
     FILE_TYPE_SYMLINK, RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
     SCTL_SOCKET_GET_WRITE_TIMEOUT_MS, SCTL_SOCKET_SET_NONBLOCK, SCTL_SOCKET_SET_READ_TIMEOUT_MS,
-    SCTL_SOCKET_SET_WRITE_TIMEOUT_MS, SCTL_SOCKET_TAKE_ERROR,
+    SCTL_SOCKET_SET_WRITE_TIMEOUT_MS, SCTL_SOCKET_TAKE_ERROR, fs as filesystem,
 };
+use scarlet_sys::{Syscall, native_scalar};
 
 pub const SYSCALL_ERROR: usize = usize::MAX;
 
@@ -357,6 +357,58 @@ pub(crate) fn file_metadata(handle: usize, metadata: &mut RawFileMetadata) -> Re
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
 }
 
+fn filesystem_result(value: usize) -> crate::io::Result<usize> {
+    if value > isize::MAX as usize {
+        Err(crate::io::Error::from_raw_os_error((value as isize).wrapping_neg() as i32))
+    } else {
+        Ok(value)
+    }
+}
+
+pub(crate) fn file_set_times(
+    handle: usize,
+    times: &filesystem::RawFileTimes,
+) -> crate::io::Result<()> {
+    filesystem_result(scarlet_sys::syscall2(
+        Syscall::FileSetTimes,
+        handle,
+        times as *const _ as usize,
+    ))
+    .map(drop)
+}
+
+pub(crate) fn file_sync(handle: usize) -> crate::io::Result<()> {
+    filesystem_result(scarlet_sys::syscall1(Syscall::FileSync, handle)).map(drop)
+}
+
+pub(crate) fn vfs_set_times(
+    path: *const u8,
+    times: &filesystem::RawFileTimes,
+    no_follow: bool,
+) -> crate::io::Result<()> {
+    filesystem_result(scarlet_sys::syscall4(
+        Syscall::VfsSetTimes,
+        path as usize,
+        times as *const _ as usize,
+        if no_follow { filesystem::FILE_TIMES_NOFOLLOW } else { 0 },
+        filesystem::CURRENT_DIRECTORY,
+    ))
+    .map(drop)
+}
+
+pub(crate) fn vfs_canonicalize(path: *const u8, buffer: &mut [u8]) -> crate::io::Result<usize> {
+    let len = filesystem_result(scarlet_sys::syscall3(
+        Syscall::VfsCanonicalize,
+        path as usize,
+        buffer.as_mut_ptr() as usize,
+        buffer.len(),
+    ))?;
+    if len == 0 || len > buffer.len() {
+        return Err(crate::io::ErrorKind::InvalidData.into());
+    }
+    Ok(len)
+}
+
 #[inline]
 pub fn vfs_open(path: *const u8, flags: usize, mode: usize) -> Result<usize, ()> {
     syscall_result(scarlet_sys::syscall3(Syscall::VfsOpen, path as usize, flags, mode))
@@ -375,9 +427,9 @@ pub fn vfs_create_file(path: *const u8, mode: usize) -> Result<(), ()> {
 }
 
 #[inline]
-pub fn vfs_create_directory(path: *const u8) -> Result<(), ()> {
-    let ret = scarlet_sys::syscall1(Syscall::VfsCreateDirectory, path as usize);
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+pub fn vfs_create_directory(path: *const u8) -> crate::io::Result<()> {
+    filesystem_result(scarlet_sys::syscall1(Syscall::VfsCreateDirectoryWithStatus, path as usize))
+        .map(drop)
 }
 
 #[inline]
@@ -431,23 +483,31 @@ pub fn vfs_create_hardlink(source_path: *const u8, target_path: *const u8) -> Re
 }
 
 #[inline]
-pub(crate) fn vfs_metadata(path: *const u8, metadata: &mut RawFileMetadata) -> Result<(), ()> {
-    let ret = scarlet_sys::syscall2(
-        Syscall::VfsMetadata,
+pub(crate) fn vfs_metadata(
+    path: *const u8,
+    metadata: &mut RawFileMetadata,
+) -> crate::io::Result<()> {
+    let ret = scarlet_sys::syscall3(
+        Syscall::VfsMetadataWithStatus,
         path as usize,
         (metadata as *mut RawFileMetadata) as usize,
+        0,
     );
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    filesystem_result(ret).map(drop)
 }
 
 #[inline]
-pub(crate) fn vfs_symlink_metadata(path: *const u8, metadata: &mut RawFileMetadata) -> Result<(), ()> {
-    let ret = scarlet_sys::syscall2(
-        Syscall::VfsSymlinkMetadata,
+pub(crate) fn vfs_symlink_metadata(
+    path: *const u8,
+    metadata: &mut RawFileMetadata,
+) -> crate::io::Result<()> {
+    let ret = scarlet_sys::syscall3(
+        Syscall::VfsMetadataWithStatus,
         path as usize,
         (metadata as *mut RawFileMetadata) as usize,
+        1,
     );
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+    filesystem_result(ret).map(drop)
 }
 
 #[inline]
