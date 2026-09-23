@@ -23,3 +23,7 @@ sha2 = "0.10.1"
 tracing = "0.1"
 unicode-width = "0.2.2"
 # tidy-alphabetical-end
+
+[target.'cfg(target_os = "scarlet")'.dependencies]
+# Scarlet has no C libc headers for blake3's optional AArch64 NEON backend.
+blake3 = { version = "1.5.2", features = ["pure"] }

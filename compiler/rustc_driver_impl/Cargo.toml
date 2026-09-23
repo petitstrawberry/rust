@@ -65,7 +65,7 @@ features = [
     "Win32_System_Diagnostics_Debug",
 ]
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+[target.'cfg(not(any(target_family = "wasm", target_os = "scarlet")))'.dependencies]
 # tidy-alphabetical-start
 ctrlc = "3.4.4"
 # tidy-alphabetical-end

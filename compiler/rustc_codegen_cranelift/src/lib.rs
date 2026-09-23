@@ -320,7 +320,15 @@ fn build_isa(sess: &Session, jit: bool) -> Arc<dyn TargetIsa + 'static> {
     let flags = settings::Flags::new(flags_builder);
 
     let isa_builder = match sess.opts.cg.target_cpu.as_deref() {
-        Some("native") => cranelift_native::builder_with_options(true).unwrap(),
+        Some("native") => {
+            #[cfg(target_os = "scarlet")]
+            sess.dcx().fatal(
+                "native CPU detection is not supported on Scarlet; omit -Ctarget-cpu=native",
+            );
+            #[cfg(not(target_os = "scarlet"))]
+            cranelift_native::builder_with_options(true)
+                .unwrap_or_else(|error| sess.dcx().fatal(error))
+        }
         Some(value) => {
             let mut builder =
                 cranelift_codegen::isa::lookup(target_triple.clone()).unwrap_or_else(|err| {

@@ -179,6 +179,13 @@ fn current_dll_path() -> Result<PathBuf, String> {
     Ok(rustc_fs_util::fix_windows_verbatim_for_gcc(&path))
 }
 
+// Scarlet keeps the compiler and its private libraries in one sysroot.
+// It has no dladdr API, so locate that sysroot from the executed compiler.
+#[cfg(target_os = "scarlet")]
+fn current_dll_path() -> Result<PathBuf, String> {
+    env::current_exe().map_err(|error| format!("cannot locate native compiler executable: {error}"))
+}
+
 #[cfg(target_os = "wasi")]
 fn current_dll_path() -> Result<PathBuf, String> {
     Err("current_dll_path is not supported on WASI".to_string())

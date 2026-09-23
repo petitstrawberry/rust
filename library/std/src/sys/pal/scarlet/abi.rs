@@ -1,8 +1,8 @@
 //! Scarlet Native ABI syscall bindings used by the Scarlet `std` PAL.
 
 pub(crate) use scarlet_sys::{
-    ERRNO_EAGAIN, ERRNO_EINTR, FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY, FILE_TYPE_REGULAR,
-    FILE_TYPE_SYMLINK, RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
+    ERRNO_EAGAIN, ERRNO_EINTR, ERRNO_EOPNOTSUPP, FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY,
+    FILE_TYPE_REGULAR, FILE_TYPE_SYMLINK, RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
     SCTL_SOCKET_GET_WRITE_TIMEOUT_MS, SCTL_SOCKET_SET_NONBLOCK, SCTL_SOCKET_SET_READ_TIMEOUT_MS,
     SCTL_SOCKET_SET_WRITE_TIMEOUT_MS, SCTL_SOCKET_TAKE_ERROR, fs as filesystem,
 };
@@ -321,6 +321,11 @@ pub fn memory_map(
 pub fn memory_unmap(addr: usize, length: usize) -> Result<(), ()> {
     let ret = scarlet_sys::syscall2(Syscall::MemoryUnmap, addr, length);
     if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+}
+
+#[inline]
+pub fn file_lock(handle: usize, operation: usize) -> Result<(), SyscallError> {
+    socket_result(scarlet_sys::syscall2(Syscall::FileLock, handle, operation)).map(drop)
 }
 
 #[inline]

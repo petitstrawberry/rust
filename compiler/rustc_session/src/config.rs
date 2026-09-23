@@ -1325,7 +1325,13 @@ pub struct Sysroot {
 
 impl Sysroot {
     pub fn new(explicit: Option<PathBuf>) -> Sysroot {
-        Sysroot { explicit, default: filesearch::default_sysroot() }
+        // An explicitly supplied sysroot is also usable when Scarlet cannot
+        // discover the executable path (for example an anonymous file exec).
+        #[cfg(target_os = "scarlet")]
+        let default = explicit.clone().unwrap_or_else(filesearch::default_sysroot);
+        #[cfg(not(target_os = "scarlet"))]
+        let default = filesearch::default_sysroot();
+        Sysroot { explicit, default }
     }
 
     /// Return explicit sysroot if it was passed with `--sysroot`, or default sysroot otherwise.

@@ -149,14 +149,28 @@ fn codegen_global_asm_inner<'tcx>(
 #[derive(Debug)]
 pub(crate) struct GlobalAsmConfig {
     assembler: PathBuf,
+    use_external_assembler: bool,
     target: String,
     pub(crate) output_filenames: Arc<OutputFilenames>,
 }
 
 impl GlobalAsmConfig {
     pub(crate) fn new(tcx: TyCtxt<'_>) -> Self {
+        let explicit_assembler = std::env::var_os("CG_CLIF_AS").map(PathBuf::from);
+        let use_external_assembler = cfg!(target_os = "scarlet")
+            || option_env!("CG_CLIF_FORCE_GNU_AS").is_some()
+            || explicit_assembler.is_some();
         GlobalAsmConfig {
-            assembler: crate::toolchain::get_toolchain_binary(tcx.sess, "as"),
+            // Scarlet's native rustc may have no LLVM backend. Its assembly
+            // route must not recursively invoke rustc with the LLVM backend.
+            assembler: explicit_assembler.unwrap_or_else(|| {
+                if cfg!(target_os = "scarlet") {
+                    PathBuf::from("as")
+                } else {
+                    crate::toolchain::get_toolchain_binary(tcx.sess, "as")
+                }
+            }),
+            use_external_assembler,
             target: match &tcx.sess.opts.target_triple {
                 rustc_target::spec::TargetTuple::TargetTuple(triple) => triple.clone(),
                 rustc_target::spec::TargetTuple::TargetJson { path_for_rustdoc, .. } => {
@@ -192,13 +206,18 @@ pub(crate) fn compile_global_asm(
     );
 
     // Assemble `global_asm`
-    if option_env!("CG_CLIF_FORCE_GNU_AS").is_some() {
+    if config.use_external_assembler {
         let mut child = Command::new(&config.assembler)
             .arg("-o")
             .arg(&global_asm_object_file)
             .stdin(Stdio::piped())
             .spawn()
-            .expect("Failed to spawn `as`.");
+            .map_err(|error| {
+                format!(
+                    "failed to start assembler {}: {error}; set CG_CLIF_AS to a native GNU-compatible assembler",
+                    config.assembler.display(),
+                )
+            })?;
         child.stdin.take().unwrap().write_all(global_asm.as_bytes()).unwrap();
         let status = child.wait().expect("Failed to wait for `as`.");
         if !status.success() {

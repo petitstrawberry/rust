@@ -9,7 +9,7 @@ pub(crate) fn target() -> Target {
         metadata: TargetMetadata {
             description: Some("Scarlet Native RISC-V (RV64IMAFDC ISA)".into()),
             tier: Some(3),
-            host_tools: Some(false),
+            host_tools: Some(true),
             std: Some(true),
         },
         llvm_target: "riscv64-unknown-scarlet".into(),

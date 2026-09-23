@@ -8,6 +8,12 @@ pub const PATH_MAX: usize = 1024;
 /// Use the current working directory for a relative VfsSetTimes pathname.
 pub const CURRENT_DIRECTORY: usize = usize::MAX;
 
+/// Nonblocking advisory whole-file lock operations for `FileLock`.
+pub const FILE_LOCK_SHARED: usize = 1;
+pub const FILE_LOCK_EXCLUSIVE: usize = 2;
+pub const FILE_LOCK_NONBLOCK: usize = 4;
+pub const FILE_LOCK_UNLOCK: usize = 8;
+
 pub const ERRNO_ENOENT: i32 = 2;
 pub const ERRNO_EACCES: i32 = 13;
 pub const ERRNO_EFAULT: i32 = 14;

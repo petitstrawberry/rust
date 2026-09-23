@@ -302,29 +302,41 @@ impl File {
     }
 
     pub fn lock(&self) -> io::Result<()> {
-        // TODO(scarlet): add Native handle/file lock operations once the kernel
-        // exposes advisory locking for FileObject capabilities.
-        unsupported()
+        self.lock_blocking(abi::filesystem::FILE_LOCK_EXCLUSIVE)
     }
 
     pub fn lock_shared(&self) -> io::Result<()> {
-        // TODO(scarlet): add Native handle/file lock operations once the kernel
-        // exposes advisory locking for FileObject capabilities.
-        unsupported()
+        self.lock_blocking(abi::filesystem::FILE_LOCK_SHARED)
     }
 
     pub fn try_lock(&self) -> Result<(), TryLockError> {
-        Err(TryLockError::Error(io::Error::from(io::ErrorKind::Unsupported)))
+        self.lock_nonblocking(abi::filesystem::FILE_LOCK_EXCLUSIVE)
     }
 
     pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
-        Err(TryLockError::Error(io::Error::from(io::ErrorKind::Unsupported)))
+        self.lock_nonblocking(abi::filesystem::FILE_LOCK_SHARED)
     }
 
     pub fn unlock(&self) -> io::Result<()> {
-        // TODO(scarlet): add Native handle/file lock operations once the kernel
-        // exposes advisory locking for FileObject capabilities.
-        unsupported()
+        abi::file_lock(self.handle, abi::filesystem::FILE_LOCK_UNLOCK).map_err(file_lock_error)
+    }
+
+    fn lock_blocking(&self, operation: usize) -> io::Result<()> {
+        loop {
+            match self.lock_nonblocking(operation) {
+                Ok(()) => return Ok(()),
+                Err(TryLockError::WouldBlock) => crate::thread::sleep(Duration::from_millis(10)),
+                Err(TryLockError::Error(error)) => return Err(error),
+            }
+        }
+    }
+
+    fn lock_nonblocking(&self, operation: usize) -> Result<(), TryLockError> {
+        match abi::file_lock(self.handle, operation | abi::filesystem::FILE_LOCK_NONBLOCK) {
+            Ok(()) => Ok(()),
+            Err(abi::SyscallError::WouldBlock) => Err(TryLockError::WouldBlock),
+            Err(error) => Err(TryLockError::Error(file_lock_error(error))),
+        }
     }
 
     pub fn truncate(&self, size: u64) -> io::Result<()> {
@@ -649,6 +661,16 @@ fn open_error(path: &CString) -> io::Error {
     match abi::vfs_metadata(path.as_ptr().cast(), &mut metadata) {
         Err(error) => error,
         Ok(()) => io::ErrorKind::Other.into(),
+    }
+}
+
+fn file_lock_error(error: abi::SyscallError) -> io::Error {
+    match error {
+        abi::SyscallError::Os(abi::ERRNO_EOPNOTSUPP) => io::ErrorKind::Unsupported.into(),
+        abi::SyscallError::Os(errno) => io::Error::from_raw_os_error(errno),
+        abi::SyscallError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        abi::SyscallError::Interrupted => io::ErrorKind::Interrupted.into(),
+        abi::SyscallError::Failed => io::ErrorKind::Other.into(),
     }
 }
 

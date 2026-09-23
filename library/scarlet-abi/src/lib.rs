@@ -189,6 +189,7 @@ pub enum Syscall {
     FileMetadata = 302,
     FileSetTimes = 303,
     FileSync = 304,
+    FileLock = 310,
 
     // VFS operations
     VfsOpen = 400,

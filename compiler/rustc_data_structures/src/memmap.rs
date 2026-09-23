@@ -2,14 +2,14 @@ use std::fs::File;
 use std::io;
 use std::ops::{Deref, DerefMut};
 
-/// A trivial wrapper for [`memmap2::Mmap`] (or `Vec<u8>` on WASM).
-#[cfg(not(any(miri, target_arch = "wasm32")))]
+/// A trivial wrapper for [`memmap2::Mmap`] (or an owned byte copy on WASM/Scarlet).
+#[cfg(not(any(miri, target_arch = "wasm32", target_os = "scarlet")))]
 pub struct Mmap(memmap2::Mmap);
 
-#[cfg(any(miri, target_arch = "wasm32"))]
+#[cfg(any(miri, target_arch = "wasm32", target_os = "scarlet"))]
 pub struct Mmap(Vec<u8>);
 
-#[cfg(not(any(miri, target_arch = "wasm32")))]
+#[cfg(not(any(miri, target_arch = "wasm32", target_os = "scarlet")))]
 impl Mmap {
     /// # Safety
     ///
@@ -29,12 +29,14 @@ impl Mmap {
     }
 }
 
-#[cfg(any(miri, target_arch = "wasm32"))]
+#[cfg(any(miri, target_arch = "wasm32", target_os = "scarlet"))]
 impl Mmap {
     #[inline]
     pub unsafe fn map(mut file: File) -> io::Result<Self> {
-        use std::io::Read;
+        use std::io::{Read, Seek};
 
+        // Match file mapping semantics even if the caller moved its cursor.
+        file.rewind()?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
         Ok(Mmap(data))
@@ -56,13 +58,13 @@ impl AsRef<[u8]> for Mmap {
     }
 }
 
-#[cfg(not(any(miri, target_arch = "wasm32")))]
+#[cfg(not(any(miri, target_arch = "wasm32", target_os = "scarlet")))]
 pub struct MmapMut(memmap2::MmapMut);
 
-#[cfg(any(miri, target_arch = "wasm32"))]
+#[cfg(any(miri, target_arch = "wasm32", target_os = "scarlet"))]
 pub struct MmapMut(Vec<u8>);
 
-#[cfg(not(any(miri, target_arch = "wasm32")))]
+#[cfg(not(any(miri, target_arch = "wasm32", target_os = "scarlet")))]
 impl MmapMut {
     #[inline]
     pub fn map_anon(len: usize) -> io::Result<Self> {
@@ -82,11 +84,12 @@ impl MmapMut {
     }
 }
 
-#[cfg(any(miri, target_arch = "wasm32"))]
+#[cfg(any(miri, target_arch = "wasm32", target_os = "scarlet"))]
 impl MmapMut {
     #[inline]
     pub fn map_anon(len: usize) -> io::Result<Self> {
-        let data = Vec::with_capacity(len);
+        // Anonymous mappings expose len initialized zero bytes, not spare capacity.
+        let data = vec![0; len];
         Ok(MmapMut(data))
     }
 
@@ -114,5 +117,40 @@ impl DerefMut for MmapMut {
     #[inline]
     fn deref_mut(&mut self) -> &mut [u8] {
         &mut self.0
+    }
+}
+
+#[cfg(all(test, any(miri, target_arch = "wasm32", target_os = "scarlet")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_file_mapping_reads_from_start_and_outlives_file() {
+        use std::io::Write;
+
+        let name = format!("rustc-owned-mmap-{}", std::process::id());
+        let path = std::env::temp_dir().join(name);
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"compiler metadata").unwrap();
+        // SAFETY: This test alone owns the new file and will not mutate it.
+        let mapping = unsafe { Mmap::map(file) }.unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(&*mapping, b"compiler metadata");
+    }
+
+    #[test]
+    fn owned_anonymous_mapping_has_initialized_length() {
+        let mut mapping = MmapMut::map_anon(17).unwrap();
+        assert_eq!(&*mapping, &[0; 17]);
+        mapping[16] = 42;
+        mapping.flush().unwrap();
+        let mapping = mapping.make_read_only().unwrap();
+        assert_eq!(mapping.len(), 17);
+        assert_eq!(mapping[16], 42);
     }
 }
