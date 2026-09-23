@@ -411,6 +411,17 @@ pub mod os {
     pub const EXE_EXTENSION: &str = "elf";
 }
 
+#[cfg(target_os = "scarlet")]
+pub mod os {
+    pub const FAMILY: &str = "";
+    pub const OS: &str = "scarlet";
+    pub const DLL_PREFIX: &str = "lib";
+    pub const DLL_SUFFIX: &str = ".so";
+    pub const DLL_EXTENSION: &str = "so";
+    pub const EXE_SUFFIX: &str = "";
+    pub const EXE_EXTENSION: &str = "";
+}
+
 // The fallback when none of the other gates match.
 #[else]
 pub mod os {

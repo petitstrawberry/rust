@@ -1,4 +1,5 @@
 mod raw_dylib;
+mod scarlet;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -45,7 +46,7 @@ use rustc_session::{Session, filesearch};
 use rustc_span::Symbol;
 use rustc_target::spec::crt_objects::CrtObjects;
 use rustc_target::spec::{
-    Abi, BinaryFormat, Cc, Env, LinkOutputKind, LinkSelfContainedComponents,
+    Abi, Arch, BinaryFormat, Cc, Env, LinkOutputKind, LinkSelfContainedComponents,
     LinkSelfContainedDefault, LinkerFeatures, LinkerFlavor, LinkerFlavorCli, Lld, Os, RelocModel,
     RelroLevel, SanitizerSet, SplitDebuginfo,
 };
@@ -157,6 +158,17 @@ pub fn link_binary(
                         path.as_ref(),
                         codegen_backend,
                     );
+                    if sess.target.os == Os::Scarlet {
+                        let machine = match sess.target.arch {
+                            Arch::AArch64 => 183,
+                            Arch::RiscV32 | Arch::RiscV64 => 243,
+                            _ => sess.dcx().fatal("unsupported Scarlet ELF architecture"),
+                        };
+                        let class = if sess.target.pointer_width == 64 { 2 } else { 1 };
+                        if let Err(error) = scarlet::mark_output(&out_filename, class, machine) {
+                            sess.dcx().fatal(format!("failed to mark Scarlet ELF output: {error}"));
+                        }
+                    }
                 }
             }
             if sess.opts.json_artifact_notifications {

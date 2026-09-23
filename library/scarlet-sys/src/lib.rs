@@ -25,7 +25,7 @@ mod arch;
 #[path = "arch/riscv.rs"]
 mod arch;
 
-pub use scarlet_abi::native_scalar;
+pub use scarlet_abi::{fs, native_scalar, tls};
 
 /// Invoke a wide-result syscall with up to six Native argument words.
 /// RV32 returns the low/high halves in a0/a1; 64-bit targets return one word.

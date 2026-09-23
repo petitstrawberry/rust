@@ -62,6 +62,17 @@ pub(super) fn all(obj: &'static str) -> CrtObjects {
     ])
 }
 
+/// Scarlet's entry references executable-local main and constructor bounds.
+/// Never inject it into a Rust dylib, cdylib, or proc-macro shared object.
+pub(super) fn pre_scarlet() -> CrtObjects {
+    new(&[
+        (LinkOutputKind::DynamicNoPicExe, &["scarlet-crt0.o"]),
+        (LinkOutputKind::DynamicPicExe, &["scarlet-crt0.o"]),
+        (LinkOutputKind::StaticNoPicExe, &["scarlet-crt0.o"]),
+        (LinkOutputKind::StaticPicExe, &["scarlet-crt0.o"]),
+    ])
+}
+
 pub(super) fn pre_musl_self_contained() -> CrtObjects {
     new(&[
         (LinkOutputKind::DynamicNoPicExe, &["crt1.o", "crti.o", "crtbegin.o"]),
