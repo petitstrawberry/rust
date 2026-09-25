@@ -5,6 +5,10 @@
 //! librustdoc, it is not production quality at all.
 
 cfg_select! {
+    target_os = "scarlet" => {
+        mod scarlet;
+        use scarlet as imp;
+    }
     target_os = "linux" => {
         mod linux;
         use linux as imp;
