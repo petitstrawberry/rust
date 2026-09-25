@@ -843,7 +843,13 @@ impl Step for Cargo {
             // with RUSTC_BOOTSTRAP being set, some "clever" build scripts enable specialization
             // based on this, which breaks stuff. We thus have to explicitly allow these features
             // here.
-            allow_features: "min_specialization,specialization",
+            // Scarlet's libc is a Cargo dependency and uses these nightly
+            // features. Only permit them when building Cargo for Scarlet.
+            allow_features: if self.target.ends_with("-scarlet") {
+                "min_specialization,specialization,c_variadic,thread_id_value,current_thread_id,allocator_api"
+            } else {
+                "min_specialization,specialization"
+            },
             cargo_args: Vec::new(),
             artifact_kind: ToolArtifactKind::Binary,
         })
