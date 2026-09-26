@@ -210,6 +210,7 @@ pub enum Syscall {
     VfsSetTimes = 414,
     VfsMetadataWithStatus = 415,
     VfsCreateDirectoryWithStatus = 416,
+    VfsRemoveWithStatus = 418,
 
     // Filesystem operations
     FsMount = 500,

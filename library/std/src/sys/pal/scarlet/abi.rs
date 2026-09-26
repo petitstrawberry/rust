@@ -420,9 +420,13 @@ pub fn vfs_open(path: *const u8, flags: usize, mode: usize) -> Result<usize, ()>
 }
 
 #[inline]
-pub fn vfs_remove(path: *const u8) -> Result<(), ()> {
-    let ret = scarlet_sys::syscall1(Syscall::VfsRemove, path as usize);
-    if ret == SYSCALL_ERROR { Err(()) } else { Ok(()) }
+pub fn vfs_remove(path: *const u8, directory: bool) -> crate::io::Result<()> {
+    filesystem_result(scarlet_sys::syscall2(
+        Syscall::VfsRemoveWithStatus,
+        path as usize,
+        usize::from(directory),
+    ))
+    .map(drop)
 }
 
 #[inline]

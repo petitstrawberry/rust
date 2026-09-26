@@ -1690,6 +1690,20 @@ fn file_open_not_found() {
 }
 
 #[test]
+fn remove_file_not_found() {
+    let tmpdir = tmpdir();
+    let path = tmpdir.join("missing");
+    assert_eq!(fs::remove_file(&path).unwrap_err().kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn remove_dir_not_found() {
+    let tmpdir = tmpdir();
+    let path = tmpdir.join("missing");
+    assert_eq!(fs::remove_dir(&path).unwrap_err().kind(), ErrorKind::NotFound);
+}
+
+#[test]
 #[cfg_attr(
     all(windows, target_arch = "aarch64"),
     ignore = "SymLinks not enabled on Arm64 Windows runners https://github.com/actions/partner-runner-images/issues/94"

@@ -487,7 +487,7 @@ pub fn readdir(path: &Path) -> io::Result<ReadDir> {
 
 pub fn unlink(path: &Path) -> io::Result<()> {
     let path = path_to_cstring(path)?;
-    abi::vfs_remove(path.as_ptr().cast()).map_err(|()| io::ErrorKind::Other.into())
+    abi::vfs_remove(path.as_ptr().cast(), false)
 }
 
 pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
@@ -514,7 +514,8 @@ pub fn set_times_nofollow(path: &Path, times: FileTimes) -> io::Result<()> {
 }
 
 pub fn rmdir(path: &Path) -> io::Result<()> {
-    unlink(path)
+    let path = path_to_cstring(path)?;
+    abi::vfs_remove(path.as_ptr().cast(), true)
 }
 
 pub fn remove_dir_all(path: &Path) -> io::Result<()> {
