@@ -103,7 +103,12 @@ impl Command {
         let (child_stdio, pipes) = self.setup_stdio(&default, needs_stdin)?;
 
         let prepared = PreparedCommand::new(self)?;
-        let pid = abi::clone_process(0).map_err(|()| io::ErrorKind::Other)?;
+        // Another thread must not mutate the system heap while it is copied.
+        // Release the inherited lock before child-side cleanup can deallocate.
+        let heap_guard = crate::sys::alloc::lock_for_fork();
+        let pid = abi::clone_process(0);
+        drop(heap_guard);
+        let pid = pid.map_err(|()| io::ErrorKind::Other)?;
 
         if pid == 0 {
             drop(pipes);

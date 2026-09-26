@@ -94,6 +94,7 @@ cfg_select! {
     }
     target_os = "scarlet" => {
         mod scarlet;
+        pub(crate) use scarlet::lock_for_fork;
     }
     target_os = "uefi" => {
         mod uefi;

@@ -1,266 +1,120 @@
+//! Scarlet's system allocator. Size-indexed bins avoid walking every free
+//! allocation, and the native futex mutex parks contending threads.
+
 use crate::alloc::{GlobalAlloc, Layout, System};
-use crate::mem::{align_of, size_of};
+use crate::cell::UnsafeCell;
 use crate::ptr;
-use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::sys::pal::abi;
+use crate::sys::sync::Mutex;
 
 const PAGE_SIZE: usize = 4096;
-const MIN_EXTEND_SIZE: usize = 64 * 1024;
-const HEADER_SIZE: usize = size_of::<Block>();
-const BACK_PTR_SIZE: usize = size_of::<usize>();
-const MIN_FREE_BLOCK_SIZE: usize = HEADER_SIZE + BACK_PTR_SIZE + 16;
 
-#[repr(C)]
-struct Block {
-    size: usize,
-    next: *mut Block,
-}
+struct Heap(UnsafeCell<dlmalloc::Dlmalloc<Scarlet>>);
 
-static HEAP_LOCK: AtomicBool = AtomicBool::new(false);
-static FREE_LIST: AtomicUsize = AtomicUsize::new(0);
+// SAFETY: every access to the allocator is serialized by HEAP_LOCK.
+unsafe impl Sync for Heap {}
+
+static HEAP: Heap = Heap(UnsafeCell::new(dlmalloc::Dlmalloc::new_with_allocator(Scarlet)));
+static HEAP_LOCK: Mutex = Mutex::new();
 
 struct HeapGuard;
 
 impl Drop for HeapGuard {
     fn drop(&mut self) {
-        HEAP_LOCK.store(false, Ordering::Release);
+        // SAFETY: the guard is created only after acquiring HEAP_LOCK.
+        unsafe { HEAP_LOCK.unlock() };
     }
 }
 
+/// Keep the heap consistent across process cloning. The caller must drop the
+/// guard in both parent and child before either can allocate or free memory.
+pub(crate) fn lock_for_fork() -> impl Drop {
+    lock_heap()
+}
+
+#[inline]
+fn lock_heap() -> HeapGuard {
+    HEAP_LOCK.lock();
+    HeapGuard
+}
+
 #[stable(feature = "alloc_system_type", since = "1.28.0")]
-// SAFETY: `System` manages process heap memory obtained from Scarlet `sbrk`.
-// The heap lock serializes free-list metadata access, and returned pointers
-// satisfy the requested `Layout` while the allocation remains live.
+// SAFETY: dlmalloc owns the mapped regions and satisfies GlobalAlloc's layout
+// and lifetime requirements. The mutex serializes access without allocating.
 unsafe impl GlobalAlloc for System {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _guard = lock_heap();
-        // SAFETY: the heap lock is held for the duration of allocator metadata
-        // access.
-        unsafe { alloc_locked(layout) }
+        // SAFETY: the lock grants exclusive access; the caller supplies a valid layout.
+        unsafe { (*HEAP.0.get()).malloc(layout.size(), layout.align()) }
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        if ptr.is_null() {
-            return;
-        }
-
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let _guard = lock_heap();
-        // SAFETY: `ptr` was returned by this allocator and has not yet been
-        // deallocated by the caller.
-        unsafe { dealloc_locked(ptr) };
+        // SAFETY: the lock grants exclusive access; calloc also clears reused blocks.
+        unsafe { (*HEAP.0.get()).calloc(layout.size(), layout.align()) }
     }
 
     #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
-        // SAFETY: The `GlobalAlloc::realloc` contract requires `ptr` and
-        // `old_layout` to describe a currently allocated block.
-        unsafe { super::realloc_fallback(self, ptr, old_layout, new_size) }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let _guard = lock_heap();
+        // SAFETY: the caller supplies a live allocation and its original layout.
+        unsafe { (*HEAP.0.get()).free(ptr, layout.size(), layout.align()) };
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let _guard = lock_heap();
+        // SAFETY: the caller supplies a live allocation and valid new size.
+        // dlmalloc preserves the original allocation if growth fails.
+        unsafe { (*HEAP.0.get()).realloc(ptr, layout.size(), layout.align(), new_size) }
     }
 }
 
-fn lock_heap() -> HeapGuard {
-    while HEAP_LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        core::hint::spin_loop();
-    }
-    HeapGuard
-}
+struct Scarlet;
 
-unsafe fn alloc_locked(layout: Layout) -> *mut u8 {
-    let align = layout.align().max(align_of::<usize>());
-    if !align.is_power_of_two() {
-        return ptr::null_mut();
-    }
-
-    let size = layout.size().max(1);
-    loop {
-        // SAFETY: the heap lock is held.
-        if let Some(ptr) = unsafe { try_alloc_from_free_list(size, align) } {
-            return ptr;
-        }
-
-        if extend_heap(size, align).is_none() {
-            return ptr::null_mut();
-        }
-    }
-}
-
-unsafe fn try_alloc_from_free_list(size: usize, align: usize) -> Option<*mut u8> {
-    let mut prev: *mut Block = ptr::null_mut();
-    let mut current = ptr::with_exposed_provenance_mut::<Block>(FREE_LIST.load(Ordering::Relaxed));
-
-    while !current.is_null() {
-        // SAFETY: `current` points to a block owned by the free list.
-        let block_size = unsafe { (*current).size };
-        let block_start = current.expose_provenance();
-
-        if let Some((data_addr, used_size)) = placement(block_start, block_size, size, align) {
-            // SAFETY: `current` is a valid free-list block.
-            let next = unsafe { (*current).next };
-            let remaining = block_size - used_size;
-
-            if remaining >= MIN_FREE_BLOCK_SIZE {
-                let next_block_addr = block_start + used_size;
-                let next_block = ptr::with_exposed_provenance_mut::<Block>(next_block_addr);
-                // SAFETY: the tail remains inside the original free block and
-                // is large enough for allocator metadata.
-                unsafe {
-                    ptr::write(next_block, Block { size: remaining, next });
-                    (*current).size = used_size;
-                    (*current).next = ptr::null_mut();
-                }
-                set_next(prev, next_block);
-            } else {
-                // SAFETY: the whole current block becomes allocated.
-                unsafe {
-                    (*current).size = block_size;
-                    (*current).next = ptr::null_mut();
-                }
-                set_next(prev, next);
-            }
-
-            let back_ptr = ptr::with_exposed_provenance_mut::<*mut Block>(
-                data_addr - BACK_PTR_SIZE,
-            );
-            // SAFETY: `placement` reserved a word immediately before the user
-            // pointer for this back-pointer.
-            unsafe {
-                ptr::write(back_ptr, current);
-            }
-            return Some(ptr::with_exposed_provenance_mut::<u8>(data_addr));
-        }
-
-        prev = current;
-        // SAFETY: `current` is a valid free-list block.
-        current = unsafe { (*current).next };
-    }
-
-    None
-}
-
-unsafe fn dealloc_locked(ptr: *mut u8) {
-    let data_addr = ptr.expose_provenance();
-    let Some(back_ptr_addr) = data_addr.checked_sub(BACK_PTR_SIZE) else {
-        return;
-    };
-    let back_ptr = ptr::with_exposed_provenance::<*mut Block>(back_ptr_addr);
-    // SAFETY: allocations store the owning block pointer in this word.
-    let block = unsafe { ptr::read(back_ptr) };
-    if block.is_null() {
-        return;
-    }
-    // SAFETY: `block` is the allocation header for `ptr`.
-    let size = unsafe { (*block).size };
-    // SAFETY: the heap lock is held and `block` is returning to the free list.
-    unsafe { insert_free_block(block, size) };
-}
-
-fn extend_heap(size: usize, align: usize) -> Option<()> {
-    let metadata = HEADER_SIZE.checked_add(BACK_PTR_SIZE)?.checked_add(align)?;
-    let needed = metadata.checked_add(size)?;
-    let request = align_up(needed.max(MIN_EXTEND_SIZE), PAGE_SIZE)?;
-    let raw = abi::sbrk(request).ok()?;
-    let raw_end = raw.checked_add(request)?;
-    let block_start = align_up(raw, align_of::<Block>())?;
-    let block_size = raw_end.checked_sub(block_start)?;
-    if block_size < MIN_FREE_BLOCK_SIZE {
-        return None;
-    }
-
-    let block = ptr::with_exposed_provenance_mut::<Block>(block_start);
-    // SAFETY: `sbrk` returned a new heap range owned by this process allocator.
-    unsafe { insert_free_block(block, block_size) };
-    Some(())
-}
-
-unsafe fn insert_free_block(block: *mut Block, size: usize) {
-    // SAFETY: the caller guarantees `block` starts a heap range of `size` bytes.
-    unsafe {
-        (*block).size = size;
-        (*block).next = ptr::null_mut();
-    }
-
-    let block_addr = block.expose_provenance();
-    let mut prev: *mut Block = ptr::null_mut();
-    let mut current = ptr::with_exposed_provenance_mut::<Block>(FREE_LIST.load(Ordering::Relaxed));
-
-    while !current.is_null() && current.expose_provenance() < block_addr {
-        prev = current;
-        // SAFETY: `current` points to a free-list block.
-        current = unsafe { (*current).next };
-    }
-
-    // SAFETY: all pointers here are free-list blocks protected by the heap lock.
-    unsafe {
-        (*block).next = current;
-    }
-    set_next(prev, block);
-
-    // SAFETY: adjacent blocks in address order can be merged.
-    unsafe {
-        coalesce_with_next(block);
-        if !prev.is_null() {
-            coalesce_with_next(prev);
+// SAFETY: anonymous mappings provide disjoint, writable, page-aligned memory.
+// Only dlmalloc-owned mappings are returned to the kernel by free/free_part.
+unsafe impl dlmalloc::Allocator for Scarlet {
+    fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
+        match abi::memory_map(
+            0,
+            0,
+            size,
+            abi::mmap::PROT_READ | abi::mmap::PROT_WRITE,
+            abi::mmap::MAP_PRIVATE | abi::mmap::MAP_ANONYMOUS,
+            0,
+        ) {
+            Ok(address) => (ptr::with_exposed_provenance_mut(address), size, 0),
+            Err(()) => (ptr::null_mut(), 0, 0),
         }
     }
-}
 
-unsafe fn coalesce_with_next(block: *mut Block) {
-    // SAFETY: `block` points to a free-list block.
-    let next = unsafe { (*block).next };
-    if next.is_null() {
-        return;
+    fn remap(&self, _ptr: *mut u8, _old_size: usize, _new_size: usize, _can_move: bool) -> *mut u8 {
+        // There is no native remap syscall. dlmalloc can allocate and copy.
+        ptr::null_mut()
     }
 
-    let block_end = block.expose_provenance() + unsafe { (*block).size };
-    if block_end == next.expose_provenance() {
-        // SAFETY: adjacent free-list blocks can be represented as one block.
-        unsafe {
-            (*block).size += (*next).size;
-            (*block).next = (*next).next;
-        }
-    }
-}
-
-fn set_next(prev: *mut Block, next: *mut Block) {
-    if prev.is_null() {
-        FREE_LIST.store(next.expose_provenance(), Ordering::Relaxed);
-    } else {
-        // SAFETY: the heap lock is held and `prev` is a valid free-list block.
-        unsafe {
-            (*prev).next = next;
-        }
-    }
-}
-
-fn placement(
-    block_start: usize,
-    block_size: usize,
-    size: usize,
-    align: usize,
-) -> Option<(usize, usize)> {
-    let block_end = block_start.checked_add(block_size)?;
-    let data_min = block_start.checked_add(HEADER_SIZE)?.checked_add(BACK_PTR_SIZE)?;
-    let data_addr = align_up(data_min, align)?;
-    let alloc_end = data_addr.checked_add(size)?;
-    if alloc_end > block_end {
-        return None;
+    fn free_part(&self, ptr: *mut u8, old_size: usize, new_size: usize) -> bool {
+        // SAFETY: dlmalloc passes the page-aligned tail of an owned mapping.
+        let tail = unsafe { ptr.add(new_size) };
+        abi::memory_unmap(tail.expose_provenance(), old_size - new_size).is_ok()
     }
 
-    // A split tail becomes a Block, whose fields require natural alignment.
-    // The payload may fit even when rounding its end would pass the block end
-    // (or overflow usize). Consume the whole block in that case; the caller
-    // will not split an empty tail.
-    let used_end = align_up(alloc_end, align_of::<Block>())
-        .filter(|end| *end <= block_end)
-        .unwrap_or(block_end);
-    Some((data_addr, used_end - block_start))
-}
+    fn free(&self, ptr: *mut u8, size: usize) -> bool {
+        abi::memory_unmap(ptr.expose_provenance(), size).is_ok()
+    }
 
-fn align_up(value: usize, align: usize) -> Option<usize> {
-    Some(value.checked_add(align - 1)? & !(align - 1))
+    fn can_release_part(&self, _flags: u32) -> bool {
+        true
+    }
+
+    fn allocates_zeros(&self) -> bool {
+        true
+    }
+
+    fn page_size(&self) -> usize {
+        PAGE_SIZE
+    }
 }
