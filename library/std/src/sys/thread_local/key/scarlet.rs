@@ -88,15 +88,27 @@ pub(crate) unsafe fn run_dtors() {
             break;
         }
     }
-    // Values that keep reinstalling themselves after DTOR_ROUNDS have the same
-    // bounded-cleanup behavior as before. Reclaim the per-thread tables; the
-    // thread mapping itself is released by native thread exit / process exit.
+    // Each std copy has its own allocator. Return the namespace to the copy
+    // which allocated it, rather than putting a foreign dlmalloc chunk into
+    // the exiting thread's std heap. Slot zero is reserved (not a TLS key) and
+    // carries the owner's disposal callback without changing namespace layout.
     let mut namespace = unsafe { head.replace(ptr::null_mut()) };
     while !namespace.is_null() {
         let next = unsafe { (*namespace).next };
-        unsafe { drop(Box::from_raw(namespace)) };
+        let dispose = unsafe { (*(*namespace).dtors)[0].load(Ordering::Acquire) };
+        if dispose != 0 {
+            unsafe {
+                mem::transmute::<usize, unsafe extern "C" fn(*mut Namespace)>(dispose)(namespace);
+            }
+        }
+        // Older std copies do not publish an owner. Their empty table stays
+        // pinned until process exit; freeing it through another heap is unsafe.
         namespace = next;
     }
+}
+
+unsafe extern "C" fn dispose_namespace(namespace: *mut Namespace) {
+    unsafe { drop(Box::from_raw(namespace)) };
 }
 
 #[inline]
@@ -115,6 +127,7 @@ fn tls_slot(key: Key) -> *mut usize {
             }
             namespace = (*namespace).next;
         }
+        DTORS[0].store(dispose_namespace as usize, Ordering::Release);
         let namespace = Box::into_raw(Box::new(Namespace {
             next: *head,
             dtors: &raw const DTORS,
