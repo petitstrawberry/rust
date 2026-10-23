@@ -19,6 +19,36 @@ pub type Pid = u32;
 /// Raw thread identifier exposed by Scarlet Native thread syscalls.
 pub type Tid = u32;
 
+/// Explicit handle transfer for EnvironmentSpawn/EnvironmentExec.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RawEnvironmentHandleMapping {
+    pub source: u32,
+    pub target: u32,
+}
+
+/// Native Environment execution request. Pointer fields address caller-owned
+/// storage: NUL-terminated argv/envp arrays, an absolute UTF-8 cwd, and mappings.
+/// Only explicitly mapped handles are installed in the new image.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RawEnvironmentExec {
+    pub size: u32,
+    pub flags: u32,
+    pub argv: usize,
+    pub envp: usize,
+    pub cwd: usize,
+    pub handles: usize,
+    pub handle_count: usize,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<RawEnvironmentHandleMapping>() == 8);
+    assert!(core::mem::size_of::<RawEnvironmentExec>() == 8 + 5 * core::mem::size_of::<usize>());
+    assert!(core::mem::offset_of!(RawEnvironmentExec, argv) == 8);
+    assert!(core::mem::offset_of!(RawEnvironmentExec, handle_count) == 8 + 4 * core::mem::size_of::<usize>());
+};
+
 /// Raw regular file type value used in [`RawFileMetadata::file_type`].
 pub const FILE_TYPE_REGULAR: u32 = 0;
 /// Raw directory file type value used in [`RawFileMetadata::file_type`].
@@ -176,6 +206,8 @@ pub enum Syscall {
     HandleSetRole = 101,
     HandleClose = 102,
     HandleDuplicate = 103,
+    /// Return the descriptor close-on-exec bit, or a negated errno.
+    HandleGetDescriptorFlags = 108,
     HandleControl = 110,
 
     // Core capabilities
@@ -284,4 +316,8 @@ pub enum Syscall {
     LsmLoad = 1200,
     LsmUnload = 1201,
     LsmList = 1202,
+
+    // Capability-scoped execution in the caller's current Environment.
+    EnvironmentCurrent = 1304,
+    EnvironmentSpawn = 1306,
 }

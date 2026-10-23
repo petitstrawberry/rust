@@ -2,7 +2,8 @@
 
 pub(crate) use scarlet_sys::{
     ERRNO_EAGAIN, ERRNO_EINTR, ERRNO_EOPNOTSUPP, FILE_PERMISSION_WRITE, FILE_TYPE_DIRECTORY,
-    FILE_TYPE_REGULAR, FILE_TYPE_SYMLINK, RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
+    FILE_TYPE_REGULAR, FILE_TYPE_SYMLINK, RawEnvironmentExec, RawEnvironmentHandleMapping,
+    RawFileMetadata, SCTL_SOCKET_GET_READ_TIMEOUT_MS,
     SCTL_SOCKET_GET_WRITE_TIMEOUT_MS, SCTL_SOCKET_SET_NONBLOCK, SCTL_SOCKET_SET_READ_TIMEOUT_MS,
     SCTL_SOCKET_SET_WRITE_TIMEOUT_MS, SCTL_SOCKET_TAKE_ERROR, fs as filesystem,
 };
@@ -108,6 +109,16 @@ pub fn handle_close(handle: usize) -> Result<(), ()> {
 #[inline]
 pub fn handle_duplicate(handle: usize) -> Result<usize, ()> {
     syscall_result(scarlet_sys::syscall1(Syscall::HandleDuplicate, handle))
+}
+
+/// Inspect inherited stdio before opening temporary handles can reuse its slots.
+pub fn handle_is_open(handle: usize) -> crate::io::Result<bool> {
+    let ret = scarlet_sys::syscall1(Syscall::HandleGetDescriptorFlags, handle);
+    if ret as isize == -(scarlet_sys::ERRNO_EBADF as isize) {
+        Ok(false)
+    } else {
+        filesystem_result(ret).map(|_| true)
+    }
 }
 
 #[inline]
@@ -225,6 +236,32 @@ pub fn clone_thread(
 pub fn clone_process(flags: u64) -> Result<u32, ()> {
     syscall_result(scarlet_sys::syscall5(Syscall::Clone, flags as usize, 0, 0, 0, 0))
         .map(|pid| pid as u32)
+}
+
+/// Returns a use-only Environment handle, owned by the caller.
+pub fn environment_current() -> Result<usize, ()> {
+    syscall_result(scarlet_sys::syscall0(Syscall::EnvironmentCurrent))
+}
+
+/// Spawn a fresh process with only the request's explicit handle mappings.
+///
+/// # Safety
+/// All pointers in `options`, their pointees, and both handles must remain
+/// valid for the synchronous syscall. The kernel copies the request and retains
+/// its own references before returning. ABI selection is inferred from the image.
+pub unsafe fn environment_spawn(
+    environment: usize,
+    executable: usize,
+    options: &RawEnvironmentExec,
+) -> Result<u32, ()> {
+    let ret = syscall_result(scarlet_sys::syscall4(
+        Syscall::EnvironmentSpawn,
+        environment,
+        executable,
+        options as *const RawEnvironmentExec as usize,
+        0,
+    ))?;
+    u32::try_from(ret).map_err(|_| ())
 }
 
 #[inline]

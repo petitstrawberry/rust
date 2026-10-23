@@ -100,24 +100,20 @@ impl Command {
         default: Stdio,
         needs_stdin: bool,
     ) -> io::Result<(Process, StdioPipes)> {
-        let (child_stdio, pipes) = self.setup_stdio(&default, needs_stdin)?;
-
+        // Observe closed inherited stdio before any temporary handle can reuse
+        // 0, 1, or 2. EnvironmentSpawn inherits no ambient handles at all.
+        let inherited = [
+            abi::handle_is_open(abi::STDIN_HANDLE)?,
+            abi::handle_is_open(abi::STDOUT_HANDLE)?,
+            abi::handle_is_open(abi::STDERR_HANDLE)?,
+        ];
+        let (child_stdio, pipes) = self.setup_stdio(&default, needs_stdin, &inherited)?;
         let prepared = PreparedCommand::new(self)?;
-        // Another thread must not mutate the system heap while it is copied.
-        // Release the inherited lock before child-side cleanup can deallocate.
-        let heap_guard = crate::sys::alloc::lock_for_fork();
-        let pid = abi::clone_process(0);
-        drop(heap_guard);
-        let pid = pid.map_err(|()| io::ErrorKind::Other)?;
+        let mappings = child_stdio.mappings();
+        let pid = prepared.spawn(&mappings)?;
 
-        if pid == 0 {
-            drop(pipes);
-            if child_stdio.apply_in_child().is_err() {
-                abi::exit_group(127);
-            }
-            prepared.exec_in_child();
-        }
-
+        // The kernel retained its own endpoint references. Drop our child ends
+        // before returning the parent pipes, including on every error above.
         drop(child_stdio);
         Ok((Process { pid: pid as i32 }, pipes))
     }
@@ -126,13 +122,14 @@ impl Command {
         &self,
         default: &Stdio,
         needs_stdin: bool,
+        inherited: &[bool; 3],
     ) -> io::Result<(ChildStdio, StdioPipes)> {
         let (stdin_child, stdin_parent) =
-            setup_stdio_slot(self.stdin.as_ref(), default, needs_stdin, true, StdioRole::Stdin)?;
+            setup_stdio_slot(self.stdin.as_ref(), default, needs_stdin, true, StdioRole::Stdin, inherited)?;
         let (stdout_child, stdout_parent) =
-            setup_stdio_slot(self.stdout.as_ref(), default, true, false, StdioRole::Stdout)?;
+            setup_stdio_slot(self.stdout.as_ref(), default, true, false, StdioRole::Stdout, inherited)?;
         let (stderr_child, stderr_parent) =
-            setup_stdio_slot(self.stderr.as_ref(), default, true, false, StdioRole::Stderr)?;
+            setup_stdio_slot(self.stderr.as_ref(), default, true, false, StdioRole::Stderr, inherited)?;
 
         Ok((
             ChildStdio { stdin: stdin_child, stdout: stdout_child, stderr: stderr_child },
@@ -147,23 +144,33 @@ fn setup_stdio_slot(
     use_default: bool,
     readable: bool,
     role: StdioRole,
+    inherited: &[bool; 3],
 ) -> io::Result<(Option<ChildStdioHandle>, Option<ChildPipe>)> {
+    let inherit = |source: usize| {
+        (inherited[source].then_some(ChildStdioHandle::Inherited(source)), None)
+    };
     let stdio = match configured {
         Some(stdio) => stdio,
         None if use_default => default,
-        None => return Ok((None, None)),
+        None => return Ok(inherit(role.handle())),
     };
 
     match (role, stdio) {
-        (_, Stdio::Inherit) => Ok((None, None)),
-        (StdioRole::Stdout, Stdio::ParentStdout) => Ok((None, None)),
-        (StdioRole::Stderr, Stdio::ParentStderr) => Ok((None, None)),
-        (_, Stdio::ParentStdout) => {
-            Ok((Some(ChildStdioHandle::duplicate_parent(abi::STDOUT_HANDLE)?), None))
+        (_, Stdio::Inherit) => Ok(inherit(role.handle())),
+        // Inheriting a closed slot keeps it closed, but explicitly redirecting
+        // another stream from that slot must fail, as duplicating it would.
+        (_, Stdio::ParentStdout)
+            if role.handle() != abi::STDOUT_HANDLE && !inherited[abi::STDOUT_HANDLE] =>
+        {
+            Err(io::Error::other("cannot redirect from closed parent stdout"))
         }
-        (_, Stdio::ParentStderr) => {
-            Ok((Some(ChildStdioHandle::duplicate_parent(abi::STDERR_HANDLE)?), None))
+        (_, Stdio::ParentStderr)
+            if role.handle() != abi::STDERR_HANDLE && !inherited[abi::STDERR_HANDLE] =>
+        {
+            Err(io::Error::other("cannot redirect from closed parent stderr"))
         }
+        (_, Stdio::ParentStdout) => Ok(inherit(abi::STDOUT_HANDLE)),
+        (_, Stdio::ParentStderr) => Ok(inherit(abi::STDERR_HANDLE)),
         (_, Stdio::Null) => Ok((Some(ChildStdioHandle::File(open_null_stdio(readable)?)), None)),
         (_, Stdio::Pipe(pipe)) => Ok((Some(ChildStdioHandle::Pipe(pipe.try_clone()?)), None)),
         (_, Stdio::InheritFile(file)) => {
@@ -191,6 +198,16 @@ enum StdioRole {
     Stderr,
 }
 
+impl StdioRole {
+    fn handle(self) -> usize {
+        match self {
+            Self::Stdin => abi::STDIN_HANDLE,
+            Self::Stdout => abi::STDOUT_HANDLE,
+            Self::Stderr => abi::STDERR_HANDLE,
+        }
+    }
+}
+
 struct ChildStdio {
     stdin: Option<ChildStdioHandle>,
     stdout: Option<ChildStdioHandle>,
@@ -198,82 +215,71 @@ struct ChildStdio {
 }
 
 impl ChildStdio {
-    fn apply_in_child(self) -> io::Result<()> {
-        if let Some(handle) = self.stdin {
-            handle.duplicate_to_stdio(abi::STDIN_HANDLE)?;
+    fn mappings(&self) -> Vec<abi::RawEnvironmentHandleMapping> {
+        let mut mappings = Vec::with_capacity(3);
+        for (target, handle) in [
+            (abi::STDIN_HANDLE, &self.stdin),
+            (abi::STDOUT_HANDLE, &self.stdout),
+            (abi::STDERR_HANDLE, &self.stderr),
+        ] {
+            if let Some(handle) = handle {
+                mappings.push(abi::RawEnvironmentHandleMapping {
+                    source: handle.as_raw_handle() as u32,
+                    target: target as u32,
+                });
+            }
         }
-        if let Some(handle) = self.stdout {
-            handle.duplicate_to_stdio(abi::STDOUT_HANDLE)?;
-        }
-        if let Some(handle) = self.stderr {
-            handle.duplicate_to_stdio(abi::STDERR_HANDLE)?;
-        }
-        Ok(())
+        mappings
     }
 }
 
 enum ChildStdioHandle {
     Pipe(ChildPipe),
     File(File),
-    DuplicatedParent(DuplicatedParentHandle),
+    // Borrowed parent stdio; the kernel duplicates it directly into the child.
+    Inherited(usize),
 }
 
 impl ChildStdioHandle {
-    fn duplicate_parent(parent_handle: usize) -> io::Result<Self> {
-        DuplicatedParentHandle::duplicate(parent_handle).map(Self::DuplicatedParent)
-    }
-
-    fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
+    fn as_raw_handle(&self) -> usize {
         match self {
-            ChildStdioHandle::Pipe(pipe) => pipe.duplicate_to_stdio(target),
-            ChildStdioHandle::File(file) => file.duplicate_to_stdio(target),
-            ChildStdioHandle::DuplicatedParent(parent_handle) => {
-                parent_handle.duplicate_to_stdio(target)
-            }
+            Self::Pipe(pipe) => pipe.as_raw_handle(),
+            Self::File(file) => file.as_raw_handle(),
+            Self::Inherited(handle) => *handle,
         }
     }
 }
 
-struct DuplicatedParentHandle {
-    handle: usize,
-}
+struct EnvironmentHandle(usize);
 
-impl DuplicatedParentHandle {
-    fn duplicate(parent_handle: usize) -> io::Result<Self> {
-        abi::handle_duplicate(parent_handle)
-            .map(|handle| Self { handle })
-            .map_err(|()| io::Error::from(io::ErrorKind::Other))
-    }
-
-    fn duplicate_to_stdio(&self, target: usize) -> io::Result<()> {
-        abi::handle_duplicate_to(self.handle, target)
-            .map_err(|()| io::Error::from(io::ErrorKind::Other))
-    }
-}
-
-impl Drop for DuplicatedParentHandle {
+impl Drop for EnvironmentHandle {
     fn drop(&mut self) {
-        let _ = abi::handle_close(self.handle);
+        let _ = abi::handle_close(self.0);
     }
 }
 
 struct PreparedCommand {
-    program: CString,
+    executable: File,
     argv_data: Vec<CString>,
     argv: Vec<*const u8>,
     envp_data: Vec<CString>,
     envp: Vec<*const u8>,
-    cwd: Option<CString>,
+    cwd: CString,
 }
 
 impl PreparedCommand {
     fn new(command: &Command) -> io::Result<Self> {
         let env = command.env.capture();
-        let program = resolve_program(&command.program, &env)?;
-        let program = os_to_cstring(&program)?;
-
+        let cwd = match command.cwd.as_deref().map(Path::new) {
+            Some(cwd) if cwd.as_os_str().is_empty() => return Err(io::ErrorKind::InvalidInput.into()),
+            Some(cwd) if cwd.is_absolute() => cwd.to_path_buf(),
+            Some(cwd) => crate::env::current_dir()?.join(cwd),
+            None => crate::env::current_dir()?,
+        };
+        let program = resolve_program(&command.program, &env, &cwd)?;
         let argv_data =
             command.args.iter().map(|arg| os_to_cstring(arg)).collect::<io::Result<Vec<_>>>()?;
+        let (executable, argv_data) = Self::open_executable(program, &cwd, argv_data)?;
         let argv = ptr_array(&argv_data);
 
         let mut envp_data = Vec::with_capacity(env.len());
@@ -286,57 +292,97 @@ impl PreparedCommand {
         }
         let envp = ptr_array(&envp_data);
 
-        let cwd = command.cwd.as_ref().map(|cwd| os_to_cstring(cwd)).transpose()?;
+        let cwd = os_to_cstring(cwd.as_os_str())?;
 
-        Ok(Self { program, argv_data, argv, envp_data, envp, cwd })
+        Ok(Self { executable, argv_data, argv, envp_data, envp, cwd })
     }
 
-    fn exec_in_child(&self) -> ! {
-        if let Some(cwd) = &self.cwd
-            && abi::vfs_change_directory(cwd.as_ptr().cast()).is_err()
-        {
-            abi::exit_group(127);
+    fn open_executable(
+        mut program: PathBuf,
+        cwd: &Path,
+        mut argv: Vec<CString>,
+    ) -> io::Result<(File, Vec<CString>)> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        // Match kernel TransparentExecutor::execute_path: four image visits,
+        // a 256-byte prefix, an absolute interpreter, and at most one option.
+        // EnvironmentSpawn accepts a held binary, so resolve scripts here.
+        for _ in 0..4 {
+            let executable = File::open(&cwd.join(&program), &options)?;
+            let mut header = [0; 256];
+            let n = executable.read(&mut header).unwrap_or(0);
+            executable.seek(io::SeekFrom::Start(0))?;
+            if n < 2 || &header[..2] != b"#!" {
+                return Ok((executable, argv));
+            }
+            let end = header[..n].iter().position(|&b| b == b'\n').unwrap_or(n);
+            let line = str::from_utf8(&header[2..end])
+                .map_err(|_| io::Error::other("invalid script interpreter"))?;
+            let mut words = line.split_whitespace();
+            let interpreter = words.next().filter(|name| name.starts_with('/'))
+                .ok_or_else(|| io::Error::other("invalid script interpreter"))?;
+            let mut script_argv = vec![os_to_cstring(OsStr::new(interpreter))?];
+            if let Some(option) = words.next() {
+                script_argv.push(os_to_cstring(OsStr::new(option))?);
+            }
+            // Preserve the path spelling used to launch this script, including
+            // relative PATH entries. ELF argv[0] is otherwise left untouched.
+            script_argv.push(os_to_cstring(program.as_os_str())?);
+            script_argv.extend(argv.into_iter().skip(1));
+            argv = script_argv;
+            program = PathBuf::from(interpreter);
         }
+        Err(io::Error::other("runtime delegation loop"))
+    }
 
+    fn spawn(&self, handles: &[abi::RawEnvironmentHandleMapping]) -> io::Result<u32> {
+        let environment = EnvironmentHandle(
+            abi::environment_current().map_err(|()| io::Error::other("EnvironmentCurrent failed"))?,
+        );
         let _keep_alive = (&self.argv_data, &self.envp_data);
-        if abi::execve(self.program.as_ptr().cast(), self.argv.as_ptr(), self.envp.as_ptr())
-            .is_err()
-        {
-            abi::exit_group(127);
+        let options = abi::RawEnvironmentExec {
+            size: crate::mem::size_of::<abi::RawEnvironmentExec>() as u32,
+            flags: 0,
+            argv: self.argv.as_ptr() as usize,
+            envp: self.envp.as_ptr() as usize,
+            cwd: self.cwd.as_ptr() as usize,
+            handles: handles.as_ptr() as usize,
+            handle_count: handles.len(),
+        };
+        // SAFETY: self owns all strings, pointer arrays and the executable;
+        // the caller owns mapped stdio and the Environment guard owns its handle.
+        // All remain live until the synchronous syscall has copied the inputs.
+        unsafe {
+            abi::environment_spawn(environment.0, self.executable.as_raw_handle(), &options)
         }
-
-        loop {
-            core::hint::spin_loop();
-        }
+        .map_err(|()| io::Error::other("EnvironmentSpawn failed"))
     }
 }
 
 fn resolve_program(
     program: &OsStr,
     env: &crate::collections::BTreeMap<EnvKey, OsString>,
-) -> io::Result<OsString> {
+    cwd: &Path,
+) -> io::Result<PathBuf> {
     if program.as_encoded_bytes().contains(&b'/') {
-        return Ok(program.to_owned());
+        return Ok(PathBuf::from(program));
     }
 
     if let Some(path) = env.get(OsStr::new("PATH")) {
         for dir in path.as_encoded_bytes().split(|b| *b == b':') {
-            if dir.is_empty() {
-                continue;
-            }
             let mut candidate =
                 PathBuf::from(str::from_utf8(dir).map_err(|_| io::ErrorKind::InvalidInput)?);
             candidate.push(program);
-            if fs::File::open(&candidate).is_ok() {
-                return Ok(candidate.into_os_string());
+            if fs::File::open(cwd.join(&candidate)).is_ok() {
+                return Ok(candidate);
             }
         }
     }
 
     let mut current_dir_candidate = PathBuf::from(".");
     current_dir_candidate.push(program);
-    if fs::File::open(&current_dir_candidate).is_ok() {
-        return Ok(current_dir_candidate.into_os_string());
+    if fs::File::open(cwd.join(&current_dir_candidate)).is_ok() {
+        return Ok(current_dir_candidate);
     }
 
     Err(io::ErrorKind::NotFound.into())
