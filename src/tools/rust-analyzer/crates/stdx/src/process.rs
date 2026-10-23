@@ -10,6 +10,9 @@ use std::{
 
 use crate::JodChild;
 
+#[cfg(target_os = "scarlet")]
+use scarlet_imp as imp;
+
 pub fn streaming_output(
     out: ChildStdout,
     err: ChildStderr,
@@ -17,10 +20,19 @@ pub fn streaming_output(
     on_stderr_line: &mut dyn FnMut(&str),
     on_eof: &mut dyn FnMut(),
 ) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    streaming_output_with(|data| imp::read2(out, err, data), on_stdout_line, on_stderr_line, on_eof)
+}
+
+fn streaming_output_with(
+    read2: impl FnOnce(&mut dyn FnMut(bool, &mut Vec<u8>, bool)) -> io::Result<()>,
+    on_stdout_line: &mut dyn FnMut(&str),
+    on_stderr_line: &mut dyn FnMut(&str),
+    on_eof: &mut dyn FnMut(),
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
 
-    imp::read2(out, err, &mut |is_out, data, eof| {
+    read2(&mut |is_out, data, eof| {
         let idx = if eof {
             data.len()
         } else {
@@ -76,7 +88,88 @@ pub fn spawn_with_streaming_output(
     Ok(Output { status, stdout, stderr })
 }
 
-#[cfg(unix)]
+// Native Scarlet pipes are blocking and do not expose poll or O_NONBLOCK.
+// Keep the callbacks on the caller while two readers drain the pipes, as in
+// Cargo's cargo-util/src/read2.rs Scarlet backend.
+#[cfg(any(target_os = "scarlet", all(test, unix)))]
+mod scarlet_imp {
+    use std::{
+        io::{self, Read},
+        process::{ChildStderr, ChildStdout},
+        sync::mpsc,
+        thread,
+    };
+
+    enum Chunk {
+        Bytes(bool, Vec<u8>),
+        End(bool),
+        Error(io::Error),
+    }
+
+    fn drain(mut pipe: impl Read, stdout: bool, sender: mpsc::SyncSender<Chunk>) {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = sender.send(Chunk::End(stdout));
+                    return;
+                }
+                Ok(count) => {
+                    if sender.send(Chunk::Bytes(stdout, buffer[..count].to_vec())).is_err() {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    let _ = sender.send(Chunk::Error(error));
+                    return;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn read2(
+        out_pipe: ChildStdout,
+        err_pipe: ChildStderr,
+        data: &mut dyn FnMut(bool, &mut Vec<u8>, bool),
+    ) -> io::Result<()> {
+        let (sender, receiver) = mpsc::sync_channel(8);
+        // Own the receiver inside the scope so returning or unwinding drops it
+        // before joining readers that may be blocked on the bounded channel.
+        thread::scope(move |scope| {
+            let out_sender = sender.clone();
+            let out_reader = scope.spawn(move || drain(out_pipe, true, out_sender));
+            let err_reader = scope.spawn(move || drain(err_pipe, false, sender));
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let mut ended = 0;
+            let mut first_error = None;
+            while ended != 2 {
+                match receiver.recv() {
+                    Ok(Chunk::Bytes(stdout, bytes)) => {
+                        let buffer = if stdout { &mut out } else { &mut err };
+                        buffer.extend_from_slice(&bytes);
+                        data(stdout, buffer, false);
+                    }
+                    Ok(Chunk::End(stdout)) => {
+                        ended += 1;
+                        data(stdout, if stdout { &mut out } else { &mut err }, true);
+                    }
+                    Ok(Chunk::Error(error)) => {
+                        ended += 1;
+                        first_error.get_or_insert(error);
+                    }
+                    Err(_) => return Err(io::ErrorKind::BrokenPipe.into()),
+                }
+            }
+            out_reader.join().expect("stdout pipe reader panicked");
+            err_reader.join().expect("stderr pipe reader panicked");
+            first_error.map_or(Ok(()), Err)
+        })
+    }
+}
+
+#[cfg(all(unix, not(target_os = "scarlet")))]
 mod imp {
     use std::{
         io::{self, prelude::*},
@@ -148,6 +241,92 @@ mod imp {
             data(true, &mut out, out_done);
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{
+        process::{Command, Stdio},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    #[test]
+    fn scarlet_blocking_pipes_stream_lines_and_eof() {
+        // Alternating more than a pipe's capacity on both streams deadlocks a
+        // reader that drains either stream to EOF before starting the other.
+        let out_line = "o".repeat(2048);
+        let err_line = "e".repeat(2048);
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                r#"
+                    i=0
+                    while [ "$i" -lt 2048 ]; do
+                        printf '%s\n' "$1"
+                        printf '%s\n' "$2" >&2
+                        i=$((i+1))
+                    done
+                    printf 'stdout-tail'
+                    exec 1>&-
+                    printf 'stderr-tail' >&2
+                "#,
+                "stdx-pipe-test",
+                &out_line,
+                &err_line,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let err = child.stderr.take().unwrap();
+
+        // Kill the writer on timeout so a sequential-reader regression fails
+        // instead of leaving the test suite blocked on a full pipe.
+        let (done, receiver) = mpsc::channel();
+        let watchdog = thread::spawn(move || {
+            let timed_out = matches!(
+                receiver.recv_timeout(Duration::from_secs(30)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+            if timed_out {
+                child.kill().unwrap();
+            }
+            (timed_out, child.wait().unwrap())
+        });
+        let mut out_lines = Vec::new();
+        let mut err_lines = Vec::new();
+        let mut eof_count = 0;
+        // Exercise the native backend on the host, including the production
+        // line splitter, without replacing the host's normal poll backend.
+        let result = super::streaming_output_with(
+            |data| super::scarlet_imp::read2(out, err, data),
+            &mut |line| out_lines.push(line.to_owned()),
+            &mut |line| err_lines.push(line.to_owned()),
+            &mut || eof_count += 1,
+        );
+        let _ = done.send(());
+        let (timed_out, status) = watchdog.join().unwrap();
+        assert!(!timed_out, "blocking pipe readers deadlocked");
+        assert!(status.success());
+        let (stdout, stderr) = result.unwrap();
+        assert_eq!(eof_count, 2);
+        for (bytes, lines, line, tail) in [
+            (stdout, out_lines, out_line, "stdout-tail"),
+            (stderr, err_lines, err_line, "stderr-tail"),
+        ] {
+            let mut expected = format!("{line}\n").repeat(2048).into_bytes();
+            expected.extend_from_slice(tail.as_bytes());
+            assert_eq!(bytes.len(), expected.len());
+            assert!(bytes == expected, "pipe output was corrupted");
+            assert_eq!(lines.len(), 2049);
+            assert!(lines[..2048].iter().all(|actual| *actual == line));
+            assert_eq!(lines[2048], tail);
+        }
     }
 }
 

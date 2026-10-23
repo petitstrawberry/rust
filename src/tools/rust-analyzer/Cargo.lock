@@ -921,8 +921,7 @@ dependencies = [
 [[package]]
 name = "home"
 version = "0.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+source = "git+https://github.com/petitstrawberry/cargo.git?rev=4fa5d1b93dfcfc48ec09f9906e6e0845ceec1eae#4fa5d1b93dfcfc48ec09f9906e6e0845ceec1eae"
 dependencies = [
  "windows-sys 0.61.0",
 ]
@@ -1235,8 +1234,6 @@ dependencies = [
 [[package]]
 name = "inventory"
 version = "0.3.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc61209c082fbeb19919bee74b176221b27223e27b65d781eb91af24eb1fb46e"
 dependencies = [
  "rustversion",
 ]
@@ -2229,9 +2226,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.17"
+version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5407465600fb0548f1442edf71dd20683c6ed326200ace4b1ef0763521bb3b77"
+checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.9.4",
 ]
@@ -2450,8 +2447,6 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 [[package]]
 name = "salsa"
 version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2e2aa2fca57727371eeafc975acc8e6f4c52f8166a78035543f6ee1c74c2dcc"
 dependencies = [
  "boxcar",
  "crossbeam-queue",
@@ -3150,9 +3145,8 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "url"
-version = "2.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08bc136a29a3d1758e07a9cca267be308aeebf5cfd5a10f3f67ab2097683ef5b"
+version = "2.5.7+scarlet.1"
+source = "git+https://github.com/petitstrawberry/scarlet-cargo-ports?rev=ff3bd49265c45747fea089065c26f66f338fccaa#ff3bd49265c45747fea089065c26f66f338fccaa"
 dependencies = [
  "form_urlencoded",
  "idna",

@@ -1074,7 +1074,20 @@ impl Config {
         let user_config_path = if let Some(path) = env::var_os("__TEST_RA_USER_CONFIG_DIR") {
             std::path::PathBuf::from(path)
         } else {
-            dirs::config_dir()?.join("rust-analyzer")
+            #[cfg(not(target_os = "scarlet"))]
+            let config_dir = dirs::config_dir();
+            // Native Scarlet uses HOME/XDG without a Unix user database.
+            #[cfg(target_os = "scarlet")]
+            let config_dir = env::var_os("XDG_CONFIG_HOME")
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .or_else(|| {
+                    env::var_os("HOME")
+                        .map(std::path::PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                        .map(|path| path.join(".config"))
+                });
+            config_dir?.join("rust-analyzer")
         };
         Some(AbsPathBuf::assert_utf8(user_config_path))
     }
