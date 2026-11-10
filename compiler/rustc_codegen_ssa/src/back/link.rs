@@ -722,6 +722,19 @@ fn link_natively(
         codegen_backend,
     );
 
+    // Native 64-bit executables import a small, fixed API from the resident
+    // interpreter. Ask LLD to retain dynamic relocations for those references;
+    // all other unresolved symbols are still rejected below, before the link
+    // output can be accepted. Static/custom-entry builds retain normal rules.
+    let scarlet_loader_imports = sess.target.os == Os::Scarlet
+        && sess.target.pointer_width == 64
+        && crate_type == CrateType::Executable
+        && link_output_kind(sess, crate_type) == LinkOutputKind::DynamicPicExe
+        && matches!(flavor, LinkerFlavor::Gnu(Cc::No, Lld::Yes));
+    if scarlet_loader_imports {
+        cmd.args(scarlet::LOADER_LINK_ARGS);
+    }
+
     linker::disable_localization(&mut cmd);
 
     for (k, v) in sess.target.link_env.as_ref() {
@@ -866,7 +879,7 @@ fn link_natively(
     }
 
     match prog {
-        Ok(prog) => {
+        Ok(mut prog) => {
             let is_msvc_link_exe = sess.target.is_like_msvc
                 && flavor == LinkerFlavor::Msvc(Lld::No)
                 // Match exactly "link.exe"
@@ -921,6 +934,20 @@ fn link_natively(
                 }
 
                 sess.dcx().abort_if_errors();
+            }
+
+            if scarlet_loader_imports {
+                for output in [&mut prog.stderr, &mut prog.stdout] {
+                    match scarlet::filter_loader_diagnostics(output) {
+                        Ok(filtered) => *output = filtered,
+                        Err(error) => {
+                            // LLD emitted an ELF while reporting unresolved
+                            // symbols as warnings. It is not a valid artifact.
+                            let _ = std::fs::remove_file(out_filename);
+                            sess.dcx().fatal(error);
+                        }
+                    }
+                }
             }
 
             let stderr = escape_string(&prog.stderr);
