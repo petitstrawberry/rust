@@ -7,6 +7,42 @@ use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+// These symbols are supplied by the resident /bin/scarlet-ld, without a
+// DT_NEEDED library. LLD otherwise either rejects them or resolves them to
+// zero in a PIE with no startup DSOs. Keep them preemptible and inspect every
+// unresolved-symbol diagnostic before accepting the output. In particular,
+// --unresolved-symbols=ignore-all is not an acceptable platform default.
+pub(super) const LOADER_LINK_ARGS: &[&str] =
+    &["--warn-unresolved-symbols", "-z", "dynamic-undefined-weak", "-z", "now"];
+
+const LOADER_SYMBOLS: &[&str] = &["dlopen", "dlsym", "dlclose", "dlerror", "environ"];
+
+/// Remove diagnostics for interpreter-provided imports, rejecting all other
+/// unresolved symbols. Input is from LLD with localization disabled by rustc.
+pub(super) fn filter_loader_diagnostics(output: &[u8]) -> Result<Vec<u8>, String> {
+    let mut filtered = Vec::with_capacity(output.len());
+    let mut loader_reference = false;
+    for line in output.split_inclusive(|&byte| byte == b'\n') {
+        let text = String::from_utf8_lossy(line);
+        if let Some((_, name)) = text.split_once(": warning: undefined symbol: ") {
+            if !LOADER_SYMBOLS.contains(&name.trim()) {
+                return Err(format!("unresolved Scarlet symbol: {}", name.trim()));
+            }
+            loader_reference = true;
+        } else if text.contains(": warning: undefined ") {
+            // Hidden, local, versioned and unrecognized diagnostic forms must
+            // never become accepted interpreter imports.
+            return Err(format!("unsupported unresolved Scarlet symbol: {}", text.trim()));
+        } else if loader_reference && (text.starts_with(">>>") || text.trim().is_empty()) {
+            continue;
+        } else {
+            loader_reference = false;
+            filtered.extend_from_slice(line);
+        }
+    }
+    Ok(filtered)
+}
+
 pub(super) fn mark_output(path: &Path, class: u8, machine: u16) -> io::Result<()> {
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     mark_header(&mut file, class, machine)
@@ -71,6 +107,34 @@ mod tests {
             let mut cursor = Cursor::new(original.clone());
             assert!(mark_header(&mut cursor, 2, 183).is_err());
             assert_eq!(cursor.into_inner(), original);
+        }
+    }
+
+    #[test]
+    fn accepts_only_resident_loader_imports_and_preserves_other_diagnostics() {
+        let mut output = String::new();
+        for symbol in LOADER_SYMBOLS {
+            output.push_str(&format!(
+                "rust-lld: warning: undefined symbol: {symbol}\n>>> referenced by input.o\n\n"
+            ));
+        }
+        output.push_str("rust-lld: warning: unrelated warning\n>>> its reference\n");
+        assert_eq!(
+            filter_loader_diagnostics(output.as_bytes()).unwrap(),
+            b"rust-lld: warning: unrelated warning\n>>> its reference\n"
+        );
+    }
+
+    #[test]
+    fn unknown_and_hidden_symbols_remain_errors() {
+        for diagnostic in [
+            "rust-lld: warning: undefined symbol: missing_application_function\n",
+            "rust-lld: warning: undefined hidden symbol: dlopen\n",
+            "rust-lld: warning: undefined symbol: dlopen@VERSION\n",
+            "rust-lld: warning: undefined symbol: dlopen\n>>> reference\n\
+             rust-lld: warning: undefined symbol: missing_application_function\n",
+        ] {
+            assert!(filter_loader_diagnostics(diagnostic.as_bytes()).is_err());
         }
     }
 }

@@ -21,6 +21,15 @@ Std publishes auxv and initializes the environment before calling the main
 image's constructors. The userspace loader initializes dependency constructors.
 Std contains no direct reference to `main` or linker-defined constructor bounds.
 
+The native 64-bit executable link also supports the resident interpreter's
+`dlopen`, `dlsym`, `dlclose`, `dlerror`, and `environ` symbols. Rustc retains these
+as dynamic imports even when the executable has no startup DSO dependencies.
+LLD's undefined-symbol diagnostics are checked against this fixed interpreter
+API; other unresolved references remain build errors and their output is
+removed. Applications need no link seed, SGFX DSO link input, or blanket
+undefined-symbol suppression. Shared libraries and explicitly static builds
+retain their normal link policy.
+
 Bootstrap assembles the architecture source with the configured target C
 compiler, then installs the object in the target sysroot's `lib` directory. For
 Clang it selects `aarch64-unknown-none` or `riscv64-unknown-none` explicitly; this
